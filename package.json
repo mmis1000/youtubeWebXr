@@ -1,0 +1,19 @@
+{
+  "name": "youtube-webxr-vr180",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test test/*.test.mjs",
+    "test:browser": "node test/browser.mjs",
+    "test:youtube": "node test/youtube.mjs",
+    "test:frame": "node scripts/test-frame.mjs",
+    "test:resolution": "node scripts/test-frame-resolution.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "iwer": "^2.7.0",
+    "playwright": "^1.56.0"
+  }
+}
