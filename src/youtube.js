@@ -5,7 +5,7 @@ export { mediaURL } from './media.js';
 export const MIN_VR_HEIGHT = 720;
 
 export function chooseFormats(formats, maxHeight, canPlay) {
-  return formats.filter(f => f.url && f.projectionType === 'MESH' && /^video\/(mp4|webm)(;|$)/.test(f.mimeType) && Number.isInteger(f.height) && f.height >= MIN_VR_HEIGHT && f.height <= maxHeight
+  return formats.filter(f => f.url && ['MESH', 'EQUIRECTANGULAR'].includes(f.projectionType) && /^video\/(mp4|webm)(;|$)/.test(f.mimeType) && Number.isInteger(f.height) && f.height >= MIN_VR_HEIGHT && f.height <= maxHeight
     && canPlay(f.mimeType) && !f.drmFamilies?.length)
     .sort((a, b) => b.height - a.height || codecScore(b.mimeType) - codecScore(a.mimeType) || (b.fps || 0) - (a.fps || 0));
 }
@@ -75,11 +75,11 @@ async function discoverStereo(videoId, height, signal) {
           const header = await fetchMedia(url, signal);
           const initBytes = await limitedBytes(header, signal);
           const metadata = readMetadata(initBytes);
-          if (!metadata?.projection || ![1, 2, 3, 4].includes(metadata.stereoMode)) throw new Error('This representation does not contain stereo projection metadata.');
+          if (!metadata?.projection || ![0, 1, 2, 3, 4].includes(metadata.stereoMode)) throw new Error('This representation does not contain supported VR projection metadata.');
           if (metadata.projection.type === 'mesh') {
             const meshes = await decodeMesh(metadata.projection.payload);
             if (metadata.stereoMode === 3 && meshes.length !== 2) throw new Error('Custom stereo requires two eye meshes.');
-          } else if (metadata.projection.type !== 'equirectangular' || metadata.stereoMode === 3) throw new Error('This stereo projection is unsupported.');
+          } else if (metadata.projection.type !== 'equirectangular' || metadata.stereoMode === 3) throw new Error('This VR projection is unsupported.');
           const resolved = { ...format, url: header.url || format.url };
           const segments = await loadIndex(resolved, initBytes, signal);
           results[i] = { format: resolved, metadata, initBytes, segments }; break;
@@ -89,7 +89,7 @@ async function discoverStereo(videoId, height, signal) {
   }));
   const available = results.filter(Boolean);
   const qualities = available.map(r => r.format.height).sort((a, b) => a - b);
-  if (!available.length) throw lastError || new Error('No stereo representation could be opened.');
+  if (!available.length) throw lastError || new Error('No VR representation could be opened.');
   return { available, qualities };
 }
 

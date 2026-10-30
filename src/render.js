@@ -25,6 +25,14 @@ export function sphere(bounds = [0, 0, 0.25, 0.25]) {
   return [{ mode: 0, data: new Float32Array(data) }];
 }
 
+export function layoutLabel(metadata) {
+  const layout = metadata.stereoMode ? 'Stereo' : 'Monoscopic';
+  const p = metadata.projection;
+  if (p?.type !== 'equirectangular') return `${layout} VR`;
+  const [, , left, right] = p.bounds;
+  return `${layout} ${Math.round((1 - left - right) * 360)}°`;
+}
+
 const identity = () => new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 const multiply = (a, b) => {
   const out = new Float32Array(16);
@@ -172,6 +180,7 @@ export class Player {
         paused: this.video?.paused ?? true, qualities: [], quality: this.video?.videoHeight
       }, (name, value) => {
         if (name === 'recenter') this.recenterPending = true;
+        else if (name === 'turn') this.turn(value);
         else if (name === 'exit') this.stop();
         else this.options.action?.(name, value);
       });
@@ -210,6 +219,12 @@ export class Player {
       this.onStatus(error.message || 'VR permission was not granted.');
       throw error;
     }
+  }
+  turn(degrees) {
+    if (!this.renderer) return;
+    // Rotate the scene opposite the requested viewing direction; keep the panel anchored.
+    const heading = this.renderer.heading + degrees * Math.PI / 180;
+    this.renderer.heading = Math.atan2(Math.sin(heading), Math.cos(heading));
   }
   preview(video, spec, parent) {
     this.clearScene(); this.mode = 'preview'; this.createRenderer(spec); this.video = video;

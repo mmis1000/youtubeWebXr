@@ -101,13 +101,16 @@ Every failure during an active, renderable VR session is visible and actionable 
 | Select while pointing away from the interface | Hide interface |
 | Select while interface is hidden | Show interface |
 | Play/Pause button on the panel | Play/pause |
-| Squeeze | Recenter horizontally |
-| Thumbstick left/right | Seek −10 / +10 seconds |
+| Squeeze | Restore the initial video direction in front of the viewer and recenter the panel |
+| Left thumbstick left/right | Seek −10 / +10 seconds |
+| Right thumbstick left/right | Turn the viewing direction left/right by 30° |
 | Exit VR button or system action | Exit VR |
 
-Selecting UI consumes that action: pressing Recenter, Exit, or Hide UI performs only that action. Selecting the panel background does nothing. Squeeze and thumbstick are shortcuts to actions also available on the panel. The panel carries no instructional hint text; the controls in VR details describe the mapping.
+Selecting UI consumes that action: pressing Recenter, Exit, or Hide UI performs only that action. Selecting the panel background does nothing. Squeeze and left-stick seeking have corresponding panel controls. The panel carries no instructional hint text; the controls in VR details describe the mapping.
 
 For thumbstick seeking, seek once per deflection, then require a return to neutral before another seek. Clamp the destination to the video's duration and preserve paused/playing state. Confirm the thumbstick mapping on Frame; the visible seek buttons work when that input is unavailable.
+
+For seated 360° viewing, right-stick turning changes the viewing direction once per deflection, with a return to neutral between steps. Turning works while the panel is hidden, keeps the panel anchored, preserves playback time, and retains the chosen direction across resolution changes. Physical head rotation continues to work. Recenter restores the initial video direction relative to the current gaze. Source discovery accepts supported mono and stereo spherical projections; the status describes their layout and equirectangular coverage. Mesh projections use the label “VR” because their coverage can vary.
 
 ## Implementation notes
 

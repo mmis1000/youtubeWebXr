@@ -5,7 +5,7 @@ import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { boxes } from '../src/metadata.js';
-import { box, concat, spatialBoxes } from './fixtures.mjs';
+import { box, concat, spatialBoxes, equiBox } from './fixtures.mjs';
 import { indexedWebM } from './webm-fixture.mjs';
 
 await mkdir('test-output', { recursive: true });
@@ -13,13 +13,13 @@ execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi
   'color=black:s=1440x720:r=10,drawbox=x=0:y=0:w=720:h=360:c=red:t=fill,drawbox=x=0:y=360:w=720:h=360:c=yellow:t=fill,drawbox=x=720:y=0:w=720:h=360:c=blue:t=fill,drawbox=x=720:y=360:w=720:h=360:c=lime:t=fill',
   '-t', '30', '-c:v', 'libx264', '-profile:v', 'baseline', '-level', '4.0', '-g', '10',
   '-pix_fmt', 'yuv420p', '-movflags', 'empty_moov+frag_keyframe+default_base_moof', 'test-output/eyes.mp4']);
-function inject(bytes) {
+function inject(bytes, spatial = spatialBoxes()) {
   const parents = new Set(['moov', 'trak', 'mdia', 'minf', 'stbl']);
   return concat(...boxes(bytes).map(b => {
     const body = bytes.subarray(b.body, b.end);
-    if (parents.has(b.type)) return box(b.type, inject(body));
-    if (b.type === 'stsd') return box(b.type, body.subarray(0, 8), inject(body.subarray(8)));
-    if (b.type === 'avc1') return box(b.type, body, spatialBoxes());
+    if (parents.has(b.type)) return box(b.type, inject(body, spatial));
+    if (b.type === 'stsd') return box(b.type, body.subarray(0, 8), inject(body.subarray(8), spatial));
+    if (b.type === 'avc1') return box(b.type, body, spatial);
     return bytes.subarray(b.start, b.end);
   }));
 }
@@ -37,6 +37,8 @@ for (const height of [720, 1080]) {
     mimeType:'video/mp4; codecs="avc1.42c028"', url:`https://fixture.googlevideo.com/media?height=${height}`,
     initRange:{start:'0',end:String(index.start - 1)}, indexRange:{start:String(index.start),end:String(index.end - 1)} } });
 }
+const monoBytes = inject(new Uint8Array(await readFile('test-output/indexed-720.mp4')), spatialBoxes(0,equiBox([0,0,0,0])));
+const monoFixture = {bytes:monoBytes,format:{...stereoFixtures.get(720).format,projectionType:'EQUIRECTANGULAR'}};
 execFileSync('ffmpeg', ['-hide_banner','-loglevel','error','-y','-i','test-output/eyes.mp4',
   '-vf','scale=2880:1440','-c:v','libvpx-vp9','-deadline','realtime','-cpu-used','8','-g','10','-cluster_time_limit','1000','test-output/indexed-1440.webm']);
 stereoFixtures.set(1440,indexedWebM(new Uint8Array(await readFile('test-output/indexed-1440.webm')),1440));
@@ -138,6 +140,8 @@ try {
           const program = ctx.getParameter(ctx.CURRENT_PROGRAM);
           const textured = program && ctx.getUniformLocation(program, 'textured');
           if (textured && ctx.getUniform(program, textured)) window.panelDraws++;
+          const crop = program && ctx.getUniformLocation(program, 'crop');
+          if (crop) window.videoModel = Array.from(ctx.getUniform(program,ctx.getUniformLocation(program,'model')));
           return draw(...args);
         };
       }
@@ -161,9 +165,9 @@ try {
       s.requestAnimationFrame(tick); return s;
     };
   });
-  let failSegments = false, mediaRedirects = 0, playerRequests = 0, headerRequests = 0;
+  let mono360 = false, failSegments = false, mediaRedirects = 0, playerRequests = 0, headerRequests = 0;
   await ux.route('**/youtubei/v1/player?*', route => { playerRequests++; return route.fulfill({ json: { playabilityStatus:{status:'OK'},
-    streamingData:{adaptiveFormats:[...[...stereoFixtures.values()].map(f=>f.format),
+    streamingData:{adaptiveFormats:[...(mono360 ? [monoFixture] : [...stereoFixtures.values()]).map(f=>f.format),
       {...stereoFixtures.get(720).format,height:240}, {...stereoFixtures.get(720).format,height:480},
       {...stereoFixtures.get(1080).format,height:2160,projectionType:'RECTANGULAR'},
       {...stereoFixtures.get(1080).format,height:2880,mimeType:'video/mp4; codecs="unsupported"'},
@@ -177,7 +181,7 @@ try {
     return route.fulfill({ contentType:'text/plain', headers:{'Access-Control-Allow-Origin':'*'}, body:url.href });
   });
   await ux.route('https://destination.googlevideo.com/**', route => {
-    const url = new URL(route.request().url()), f = stereoFixtures.get(Number(url.searchParams.get('height')));
+    const url = new URL(route.request().url()), f = mono360 ? monoFixture : stereoFixtures.get(Number(url.searchParams.get('height')));
     const [start,end] = url.searchParams.get('range').split('-').map(Number);
     if (start <= Number(f.format.indexRange.end)) headerRequests++;
     const failed = failSegments && start > Number(f.format.indexRange.end);
@@ -282,11 +286,11 @@ try {
   await ready(720);
   await clickVR(104,240);
   assert.equal(await ux.evaluate(()=>window.xrSessions),sessionCount);
-  await ux.evaluate(()=>window.testDevice.controllers.right.updateAxes('thumbstick',1,0));
+  await ux.evaluate(()=>window.testDevice.controllers.left.updateAxes('thumbstick',1,0));
   await ux.waitForFunction(()=>document.querySelector('video').currentTime>14.9);
   await ux.waitForTimeout(450);
   assert.ok(await ux.evaluate(()=>document.querySelector('video').currentTime<15.1),'held stick seeks only once');
-  await ux.evaluate(()=>window.testDevice.controllers.right.updateAxes('thumbstick',0,0));
+  await ux.evaluate(()=>window.testDevice.controllers.left.updateAxes('thumbstick',0,0));
   await ux.waitForFunction(()=>!window.xrText.includes('Seeking…') && !document.querySelector('video[data-youtube-webxr-stereo]').seeking);
   await ux.evaluate(()=>{window.seekCount=0;document.querySelector('video').addEventListener('seeking',()=>window.seekCount++)});
   await aim(200,120); await trigger(1); await aim(600,120);
@@ -322,9 +326,49 @@ try {
   await ux.evaluate(()=>document.querySelector('.ytp-right-controls').innerHTML='<div><button class="ytp-fullscreen-button">Fullscreen</button></div>');
   await ux.locator('.ytp-right-controls').getByRole('button',{name:'Enter VR',exact:true}).waitFor();
   assert.equal(await ux.locator('.youtube-webxr-entry').count(),1);
+  mono360 = true;
+  await ux.getByRole('button',{name:'Enter VR',exact:true}).click();
+  await ready(720);
+  await ux.waitForFunction(()=>window.xrText.some(t=>t.includes('Monoscopic 360°')));
+  await ux.evaluate(()=>document.querySelector('video').pause());
+  const beforeTurn = await ux.evaluate(()=>({time:document.querySelector('video').currentTime,heading:Math.atan2(window.videoModel[8],window.videoModel[10])}));
+  for(let i=1;i<=6;i++) {
+    await ux.evaluate(()=>window.testDevice.controllers.right.updateAxes('thumbstick',1,0));
+    await ux.waitForFunction(({heading,i})=>Math.abs(Math.cos(Math.atan2(window.videoModel[8],window.videoModel[10])-heading)-Math.cos(i*Math.PI/6))<.001,{heading:beforeTurn.heading,i});
+    await ux.waitForTimeout(100);
+    const turned = await ux.evaluate(()=>Math.atan2(window.videoModel[8],window.videoModel[10]));
+    assert.ok(Math.abs(Math.sin(turned-beforeTurn.heading-i*Math.PI/6))<.001,'held right stick turns once in the requested direction');
+    await ux.evaluate(()=>window.testDevice.controllers.right.updateAxes('thumbstick',0,0));
+    await ux.waitForTimeout(100);
+  }
+  assert.ok(Math.abs(await ux.evaluate(()=>document.querySelector('video').currentTime)-beforeTurn.time)<.1,'turning leaves playback position unchanged');
+  const monoPixels = await ux.evaluate(async()=>{
+    const {VideoRenderer,sphere,Player}=await import('/src/render.js');
+    const canvas=document.createElement('canvas');canvas.width=canvas.height=256;
+    const r=new VideoRenderer(canvas,{meshes:[sphere([0,0,0,0])],stereoMode:0,pose:[0,0,0]});
+    const p=new Player(()=>{},()=>{});p.renderer=r;
+    const identity=new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]);
+    const projection=new Float32Array([1,0,0,0,0,1,0,0,0,0,-1.002,-1,0,0,-.02002,0]);
+    r.upload(document.querySelector('video[data-youtube-webxr-stereo]'));
+    const result=[];
+    // Looking 45° right samples the blue quadrant; 135° right reaches the rear hemisphere.
+    for(const degrees of [45,90]) {
+      p.turn(degrees);
+      for(const eye of ['left','right']) {
+        r.clear();r.draw(eye,{x:0,y:0,width:256,height:256},projection,identity);
+        const pixel=new Uint8Array(4);r.gl.readPixels(128,192,1,1,r.gl.RGBA,r.gl.UNSIGNED_BYTE,pixel);result.push([...pixel]);
+      }
+    }
+    r.dispose();return result;
+  });
+  for(const pixel of monoPixels) assert.ok(pixel[2]>200&&pixel[0]<30,`mono front/rear, both eyes: ${pixel}`);
+  await clickVR(148,240);
+  await ux.waitForFunction(()=>Math.abs(Math.atan2(window.videoModel[8],window.videoModel[10])-Math.atan2(window.xrProbe.viewer[8],window.xrProbe.viewer[10]))<.001);
+  await clickVR(921,240);
+  await ux.waitForFunction(()=>!window.testDevice.activeSession);
   assert.deepEqual(uxErrors,[]);
   assert.ok(mediaRedirects > 0, 'stereo playback follows CDN text redirects');
-  await writeFile(`test-output/${artifactPrefix}ux-browser-result.json`,JSON.stringify({result:'passed',sessionCount,webmPixels,checks:['permission refusal','cancelled late session','closest resolution','validated VR quality list','MP4/WebM switching and seeking','page quality switch','headset quality switch','controller pause','thumbstick latch','scrub on release','recenter consumption','error/retry','clean exit','control reattachment']},null,2));
+  await writeFile(`test-output/${artifactPrefix}ux-browser-result.json`,JSON.stringify({result:'passed',sessionCount,webmPixels,monoPixels,checks:['permission refusal','cancelled late session','closest resolution','validated VR quality list','MP4/WebM switching and seeking','page quality switch','headset quality switch','controller pause','left-stick seek','right-stick turn and recenter','mono 360 front/rear pixels','scrub on release','recenter consumption','error/retry','clean exit','control reattachment']},null,2));
   await ux.close();
   const unsupported = await browser.newPage();
   await unsupported.addInitScript({content:`Object.defineProperty(navigator,'xr',{value:{isSessionSupported:async()=>false},configurable:true});\n${extension}`});

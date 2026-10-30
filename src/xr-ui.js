@@ -100,7 +100,9 @@ export class XRControls {
       if (press?.down && press.hit?.id === 'seek' && hit) press.hit.ratio = hit.ratio;
       if (source.gamepad?.mapping === 'xr-standard' && source.gamepad.axes.length >= 4) {
         const next = thumbstickDirection(source.gamepad.axes, this.sticks.get(source) || false);
-        this.sticks.set(source, next.latched); if (next.step) this.action('skip', next.step);
+        this.sticks.set(source, next.latched);
+        if (next.step) this.action(source.handedness === 'right' ? 'turn' : 'skip',
+          source.handedness === 'right' ? Math.sign(next.step) * 30 : next.step);
       }
     }
     if (this.visible) this.paint(now);

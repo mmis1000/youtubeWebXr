@@ -1,8 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { InitCollector, decodeMesh, readMetadata } from '../src/metadata.js';
-import { sphere, uvTransform } from '../src/render.js';
-import { mp4, webm, meshProjection, concat } from './fixtures.mjs';
+import { sphere, uvTransform, layoutLabel } from '../src/render.js';
+import { mp4, webm, meshProjection, concat, equiBox } from './fixtures.mjs';
+
+test('mono 360 metadata covers the back hemisphere and labels its actual coverage', () => {
+  const m = readMetadata(mp4(0, equiBox([0,0,0,0])));
+  assert.equal(layoutLabel(m), 'Monoscopic 360°');
+  assert.deepEqual(uvTransform(m.stereoMode,'left'), uvTransform(m.stereoMode,'right'));
+  const data = sphere(m.projection.bounds)[0].data;
+  assert.ok(data.some((v,i) => i % 5 === 2 && v > .9));
+  assert.equal(layoutLabel(readMetadata(mp4())), 'Stereo 180°');
+  assert.equal(layoutLabel(readMetadata(mp4(2,meshProjection()))), 'Stereo VR');
+});
 
 test('MP4 and WebM agree on stereo packing and cropped VR180 bounds', () => {
   for (const bytes of [mp4(), webm()]) {

@@ -16,6 +16,7 @@ test('VR format selection respects resolution, codec support and direct URLs', (
   assert.deepEqual(chooseFormats([{...formats[0],projectionType:'RECTANGULAR'},{...formats[0],drmFamilies:['test']}],2160,()=>true),[]);
   assert.equal(chooseFormats([{...formats[0],url:undefined}],4320,()=>true).length,0);
   assert.deepEqual(chooseFormats(formats,480,()=>true),[]);
+  assert.equal(chooseFormats([{...formats[0],projectionType:'EQUIRECTANGULAR'}],2160,()=>true).length,1);
 });
 test('stream URLs are restricted to HTTPS Google video hosts', () => {
   assert.equal(mediaURL('https://rr1.googlevideo.com/videoplayback').hostname,'rr1.googlevideo.com');

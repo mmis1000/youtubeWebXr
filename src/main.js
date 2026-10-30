@@ -1,6 +1,6 @@
 import { decodeMesh } from './metadata.js';
 import { observeMedia } from './observe.js';
-import { Player, sphere } from './render.js';
+import { Player, sphere, layoutLabel } from './render.js';
 import { StereoResolver, LinkedVideo, waitForFrame, MIN_VR_HEIGHT } from './youtube.js';
 import { version } from '../extension/manifest.json';
 import { colors, fontStack } from './theme.js';
@@ -24,7 +24,7 @@ function install() {
   const id = () => new URL(location.href).searchParams.get('v');
   const state = () => ({ title: document.getElementById('movie_player')?.getVideoData?.()?.title || document.title.replace(/ - YouTube$/, ''),
     time: video?.currentTime || 0, duration: video?.duration || 0, paused: busy ? !intendedPlaying : video?.paused ?? true,
-    quality, qualities, requestedQuality, busy, error, status, layout: mode === 'mono' ? 'Monoscopic 180°' : 'Stereo 180°' });
+    quality, qualities, requestedQuality, busy, error, status, layout: spec?.layout || 'VR' });
   const player = new Player(message => { status = message; update(); }, () => finish(), {
     state, action,
     error: e => { error = e.message; status = error; update(); }
@@ -57,13 +57,14 @@ function install() {
     error = e.message || String(e); status = error; video?.pause(); player.setSource(null); update();
   }
   async function specification(metadata) {
-    if (mode !== 'auto') return { meshes: [sphere()], stereoMode: { sbs: 2, tb: 1, mono: 0 }[mode], pose: [0,0,0] };
+    if (mode !== 'auto') return { meshes: [sphere()], stereoMode: { sbs: 2, tb: 1, mono: 0 }[mode], pose: [0,0,0],
+      layout: mode === 'mono' ? 'Monoscopic 180°' : 'Stereo 180°' };
     if (!metadata?.projection) throw new Error('This stream has no projection metadata. Choose a manual layout in VR details if you know its packing.');
     const p = metadata.projection;
     const meshes = p.type === 'mesh' ? await decodeMesh(p.payload) : p.type === 'equirectangular' ? [sphere(p.bounds)] : null;
     if (!meshes) throw new Error('This projection is not supported.');
     if (metadata.stereoMode === 3 && meshes.length !== 2) throw new Error('Custom stereo requires two eye meshes.');
-    return { meshes, stereoMode: metadata.stereoMode ?? 0, pose: metadata.pose || [0,0,0] };
+    return { meshes, stereoMode: metadata.stereoMode ?? 0, pose: metadata.pose || [0,0,0], layout: layoutLabel(metadata) };
   }
   async function prepare(height = targetQuality, preview = false) {
     if (!video) return;
@@ -77,8 +78,8 @@ function install() {
     let candidate;
     try {
       let metadata, result;
-      const observedStereo = source?.metadata?.projection && [1,2,3,4].includes(source.metadata.stereoMode);
-      if (mode !== 'auto' || (observedStereo && !id())) {
+      const observedVR = source?.metadata?.projection && [0,1,2,3,4].includes(source.metadata.stereoMode);
+      if (mode !== 'auto' || (observedVR && !id())) {
         metadata = source?.metadata;
         qualities = mode === 'auto' ? [original.videoHeight].filter(h => h >= MIN_VR_HEIGHT) : [];
         await waitForFrame(original, controller.signal);
@@ -208,7 +209,7 @@ function install() {
     if (!ui) return;
     ui.entry.textContent = player.pending ? 'Cancel VR' : player.session ? 'Exit VR' : 'Enter VR';
     ui.entry.disabled = !video || (!xrSupported && !player.session && !player.pending);
-    ui.entry.title = xrSupported ? 'Open the VR180 player' : 'This browser cannot enter VR. Eye preview is available in VR details.';
+    ui.entry.title = xrSupported ? 'Open the VR player' : 'This browser cannot enter VR. Eye preview is available in VR details.';
     ui.support.textContent = xrSupported ? '' : 'Immersive VR is unavailable in this browser. Eye preview is available below.';
     ui.support.hidden = xrSupported;
     ui.row.hidden = !player.session;
@@ -289,7 +290,7 @@ function install() {
       const option = make('option', text, select); option.value = value;
     }
     select.addEventListener('change', () => { mode = select.value; if (player.mode) { intendedPlaying = !video.paused; prepare(targetQuality, player.mode === 'preview'); } });
-    make('p', 'In VR: point and trigger to use controls. Trigger away from the panel to hide it; trigger again to show it. Squeeze to recenter.', details);
+    make('p', 'In VR: point and trigger to use controls. Trigger away from the panel to hide it; trigger again to show it. Right stick: turn 30°. Left stick: seek 10 seconds. Return the stick to center between steps. Squeeze to reset the view and recenter the panel.', details);
     const inspect = make('button', 'Show diagnostics', details);
     const report = make('textarea', '', details); report.readOnly = true; report.hidden = true; report.setAttribute('aria-label', 'Playback diagnostics');
     inspect.addEventListener('click', () => { report.hidden = !report.hidden; lastDiagnosticsAt = -Infinity; update(); });

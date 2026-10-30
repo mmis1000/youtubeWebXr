@@ -12,6 +12,16 @@ The behavior requirements are in [ux-design.md](ux-design.md). Panel geometry, c
 - Source changes retain the XR session. Preparation and seeking preserve playback intention. Preview can enter VR directly.
 - Cancellation, navigation, exit, and source failure release or replace the associated media work.
 
+## 360° playback and seated turning (v0.3.0)
+
+The reported video `ceZmJm6_LjM` advertises `EQUIRECTANGULAR` formats and stores mono layout 0 with uncropped spherical bounds in both MP4 and WebM headers. The previous discovery filter accepted only `MESH` advertisements and stereo layouts 1–4, rejecting these valid 360° sources. Discovery now accepts equirectangular advertisements and mono spherical metadata while retaining projection, codec, resolution, and index validation. The panel reports the actual layout and equirectangular coverage; mesh sources use “Stereo VR” or “Monoscopic VR”.
+
+The right thumbstick turns the view by 30° per deflection, with neutral required between turns. The left thumbstick seeks ten seconds. Turning preserves the playback clock and the panel anchor. Source replacement retains the heading; Recenter and squeeze reset the video direction relative to the viewer's current gaze and reposition the panel.
+
+Validation: build, 25 unit tests, extension and userscript browser suites, and panel tests passed. Browser tests decode a mono 360° fixture, check front/rear pixels for both eyes, turn through 180° using emulated controller input, check latching and unchanged playback time, then operate Recenter and Exit through the anchored panel. Existing VR180 stereo tests also pass.
+
+On Frame, the reported video exposes validated 720p, 1080p, 1440p, and 2160p sources. Its 3840 × 2160 VP9 WebM source decoded at 35:22 with zero clock drift while paused. Native WebXR reports both eye views and the “Monoscopic 360°” panel. The session initially reported `visible-blurred` with no controller sources. Bringing Chromium’s VR session to the foreground made the video visible. The wearer then confirmed that right-stick turning reveals the scene behind them and that the panel stays in place and works correctly.
+
 ## Verification on October 31, 2026
 
 `npm run build`, all 24 unit tests, `npm run test:browser`, `npm run test:userscript`, and `npm run test:panel` passed locally. Browser tests use real indexed MP4 and VP9 WebM playback and IWER input to check format filtering, cross-container switching/seeking, failure/retry, cancellation, selection consumption, cleanup, and control-bar replacement. Visibility tests check that hidden panels stop drawing, showing the panel preserves playback, and recovery restores the panel. Stereo color checks verify eye separation and orientation in both containers. Page checks cover mutually exclusive settings popovers and Details fitting inside a 320 px player.
