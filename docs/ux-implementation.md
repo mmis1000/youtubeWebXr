@@ -37,4 +37,4 @@ This second video exposed a CDN redirect failure: an HTTP redirect to another me
 
 The wearer confirmed that controls and playback work after checking the controller outlines, headset panel, Pause, Recenter, and resolution menu at 2160p. The updated userscript has passed browser automation; this UX build has not yet been validated through the installed userscript manager on Frame.
 
-The changes remain local for review. The published v0.1.0 packages contain the previous interface.
+These changes are included in v0.2.0. The v0.1.0 packages contain the previous interface. Tag CI builds and tests the extension and userscript before publishing the release assets.

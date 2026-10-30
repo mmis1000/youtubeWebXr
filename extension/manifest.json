@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "YouTube WebXR VR180 — prototype",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Load YouTube VR180 stereo streams and render their projection metadata in WebXR.",
   "minimum_chrome_version": "111",
   "content_scripts": [{

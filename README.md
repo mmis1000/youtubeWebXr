@@ -30,7 +30,7 @@ Enable one installation at a time. A duplicate-load guard makes the first loaded
 
 ## Play a VR180 video
 
-The UX update below is available in source builds. The published v0.1.0 package retains the earlier Load stereo / Enter VR flow until the next release.
+Version 0.2.0 introduces the interface below, WebM VR sources, and source caching. Version 0.1.0 uses the earlier Load stereo / Enter VR flow.
 
 1. Open a YouTube watch page and click **Enter VR** in YouTube's player controls.
 2. Allow the browser's VR permission prompt. Stereo preparation happens inside the session, with visible controllers, loading status, and Exit.
@@ -76,7 +76,7 @@ Hardware decoding depends on the browser and operating-system driver. Related pr
 
 With those fixes, testing on October 30–31, 2026 confirmed hardware AV1 playback and correct 4K VR stereo/tracking. Separate local-file tests sustained 4K60 and synthetic 8K30; the tested real 8K60 stream advanced at roughly half speed. These are device/build-specific measurements, not guarantees for every video or the two-video userscript path.
 
-The earlier installed Violentmonkey userscript was tested with `38jcxsq8EBU` on October 31. Its 1080p and 2160p settings both selected the 1080p MP4 source and played smoothly in native VR after restarting Chromium. Reported motion jumps around scene transitions were subsequently identified by the user as present in the source video; a local hardware-decoding test over 12–25 seconds recorded zero dropped frames. The current source build adds the higher-resolution WebM representations.
+The earlier installed Violentmonkey userscript was tested with `38jcxsq8EBU` on October 31. Its 1080p and 2160p settings both selected the 1080p MP4 source and played smoothly in native VR after restarting Chromium. Reported motion jumps around scene transitions were subsequently identified by the user as present in the source video; a local hardware-decoding test over 12–25 seconds recorded zero dropped frames. Version 0.2.0 adds the higher-resolution WebM representations.
 
 [Earlier investigation notes](docs/steam-frame-investigation.md) preserve the original software-decoding limits and the first V4L2 deployment. They describe historical builds and test profiles.
 
