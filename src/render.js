@@ -1,3 +1,5 @@
+import { XRControls } from './xr-ui.js';
+
 export function uvTransform(stereoMode, eye) {
   const right = eye === 'right';
   if (stereoMode === 2) return [0.5, 1, right ? 0.5 : 0, 0];
@@ -66,11 +68,7 @@ export class VideoRenderer {
       if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
       this.uniforms = Object.fromEntries(['projection', 'view', 'model', 'crop', 'video'].map(n => [n, gl.getUniformLocation(program, n)]));
       this.position = gl.getAttribLocation(program, 'position'); this.uv = gl.getAttribLocation(program, 'uv');
-      this.meshes = spec.meshes.map(parts => parts.map(part => {
-        const buffer = gl.createBuffer(); this.buffers.push(buffer);
-        gl.bindBuffer(gl.ARRAY_BUFFER, buffer); gl.bufferData(gl.ARRAY_BUFFER, part.data, gl.STATIC_DRAW);
-        return { buffer, count: part.data.length / 5, mode: [gl.TRIANGLES, gl.TRIANGLE_STRIP, gl.TRIANGLE_FAN][part.mode] };
-      }));
+      this.setSpec(spec);
       this.texture = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, this.texture);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -79,6 +77,16 @@ export class VideoRenderer {
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
       gl.disable(gl.CULL_FACE); gl.disable(gl.DEPTH_TEST);
     } catch (error) { this.dispose(); throw error; }
+  }
+  setSpec(spec) {
+    const gl = this.gl;
+    for (const buffer of this.buffers) gl.deleteBuffer(buffer);
+    this.buffers = []; this.spec = spec;
+    this.meshes = spec.meshes.map(parts => parts.map(part => {
+      const buffer = gl.createBuffer(); this.buffers.push(buffer);
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer); gl.bufferData(gl.ARRAY_BUFFER, part.data, gl.STATIC_DRAW);
+      return { buffer, count: part.data.length / 5, mode: [gl.TRIANGLES, gl.TRIANGLE_STRIP, gl.TRIANGLE_FAN][part.mode] };
+    }));
   }
   upload(video) {
     if (video.readyState < 2) return false;
@@ -96,6 +104,7 @@ export class VideoRenderer {
   }
   draw(eye, viewport, projection, viewMatrix) {
     const gl = this.gl, u = this.uniforms;
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.texture);
     gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height); gl.useProgram(this.program);
     gl.uniformMatrix4fv(u.projection, false, projection);
     // Captured video has a fixed camera origin. Only headset rotation changes the viewing direction.
@@ -121,85 +130,134 @@ export class VideoRenderer {
 }
 
 export class Player {
-  constructor(onStatus, onEnd) { this.onStatus = onStatus; this.onEnd = onEnd; this.active = false; }
-  async start(video, spec, previewParent = null, controlsVideo = video) {
-    if (this.active) return;
-    this.active = true; this.video = video; this.recenterPending = true;
-    const run = this.run = (this.run || 0) + 1;
-    const current = () => this.active && this.run === run;
-    try {
-      // Request the session within the button's activation, before awaiting other work.
-      if (!previewParent) {
-        this.onStatus('Requesting immersive VR…');
-        const session = await navigator.xr.requestSession('immersive-vr');
-        if (!current()) { await session.end(); return; }
-        this.session = session;
-        session.addEventListener('end', () => { if (current()) this.cleanup(); }, { once: true });
-      }
-      const canvas = this.canvas = document.createElement('canvas'); canvas.width = 960; canvas.height = 480;
-      if (previewParent) previewParent.append(canvas);
-      const renderer = this.renderer = new VideoRenderer(canvas, spec);
-      if (controlsVideo.paused) await controlsVideo.play();
-      if (video !== controlsVideo && video.paused) await video.play();
-      if (!current()) return;
-      if (this.session) {
-        await renderer.gl.makeXRCompatible();
-        if (!current()) return;
-        const layer = new XRWebGLLayer(this.session, renderer.gl, { alpha: false, antialias: false });
-        this.session.updateRenderState({ baseLayer: layer, depthNear: 0.01, depthFar: 10 });
-        const space = await this.session.requestReferenceSpace('local');
-        if (!current()) return;
-        this.session.addEventListener('select', () => {
-          if (controlsVideo.paused) controlsVideo.play().catch(e => this.fail(e)); else controlsVideo.pause();
-        });
-        this.session.addEventListener('squeeze', () => { this.recenterPending = true; });
-        const frame = (_, xrFrame) => {
-          if (!this.active) return;
-          try {
-            const pose = xrFrame.getViewerPose(space);
-            renderer.clear(layer.framebuffer);
-            if (pose && renderer.upload(video)) {
-              if (this.recenterPending) {
-                const m = pose.transform.matrix;
-                renderer.heading = Math.atan2(m[8], m[10]); this.recenterPending = false;
-              }
-              for (const xrView of pose.views) renderer.draw(xrView.eye, layer.getViewport(xrView), xrView.projectionMatrix, xrView.transform.inverse.matrix);
-            }
-            this.frame = this.session.requestAnimationFrame(frame);
-          } catch (error) { this.fail(error); }
-        };
-        this.frame = this.session.requestAnimationFrame(frame);
-        this.onStatus('VR active. Select to pause or play; squeeze to recenter.');
-      } else {
-        const p = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, -1.002, -1, 0, 0, -0.02002, 0]);
-        const frame = () => {
-          if (!this.active) return;
-          try {
-            renderer.clear();
-            if (renderer.upload(video)) {
-              renderer.draw('left', { x: 0, y: 0, width: 480, height: 480 }, p, identity());
-              renderer.draw('right', { x: 480, y: 0, width: 480, height: 480 }, p, identity());
-            }
-            this.frame = requestAnimationFrame(frame);
-          } catch (error) { this.fail(error); }
-        };
-        this.frame = requestAnimationFrame(frame);
-        this.onStatus('Eye preview: left eye on the left, right eye on the right.');
-      }
-    } catch (error) { if (current()) this.fail(error); }
+  constructor(onStatus, onEnd, options = {}) {
+    this.onStatus = onStatus; this.onEnd = onEnd; this.options = options;
+    this.mode = null; this.pending = false; this.request = 0;
   }
-  fail(error) { this.stop(); this.onStatus(error.message || String(error)); }
+  get active() { return !!this.mode || this.pending; }
+  cancelEntry() {
+    if (this.session) this.stop();
+    else { ++this.request; this.pending = false; }
+  }
+  createRenderer(spec = { meshes: [], stereoMode: 0, pose: [0, 0, 0] }) {
+    const canvas = this.canvas = document.createElement('canvas'); canvas.width = 960; canvas.height = 480;
+    this.renderer = new VideoRenderer(canvas, spec);
+  }
+  setSource(video, spec) {
+    this.video = video;
+    if (spec) this.renderer?.setSpec(spec);
+  }
+  async enter() {
+    if (this.pending || this.session) return false;
+    this.pending = true;
+    const request = ++this.request;
+    this.onStatus('Opening VR…');
+    let session;
+    try {
+      // Keep the permission request in the originating click's activation.
+      session = await navigator.xr.requestSession('immersive-vr');
+      if (request !== this.request) { await session.end(); return false; }
+      this.clearScene(); this.mode = 'vr'; this.session = session;
+      session.addEventListener('end', () => { if (this.session === session) this.cleanup(); }, { once: true });
+      this.createRenderer();
+      const renderer = this.renderer;
+      await renderer.gl.makeXRCompatible();
+      if (request !== this.request) return false;
+      const layer = new XRWebGLLayer(session, renderer.gl, { alpha: false, antialias: false });
+      session.updateRenderState({ baseLayer: layer, depthNear: .01, depthFar: 20 });
+      const space = await session.requestReferenceSpace('local');
+      if (request !== this.request) return false;
+      this.controls = new XRControls(renderer.gl, () => this.options.state?.() || {
+        title: 'YouTube VR180', time: this.video?.currentTime || 0, duration: this.video?.duration || 0,
+        paused: this.video?.paused ?? true, qualities: [], quality: this.video?.videoHeight
+      }, (name, value) => {
+        if (name === 'recenter') this.recenterPending = true;
+        else if (name === 'exit') this.stop();
+        else this.options.action?.(name, value);
+      });
+      this.recenterPending = true;
+      for (const type of ['selectstart', 'selectend', 'select']) session.addEventListener(type, e => {
+        if (this.session === session) this.controls?.input(type, e.inputSource);
+      });
+      session.addEventListener('squeeze', () => { this.recenterPending = true; });
+      const frame = (time, xrFrame) => {
+        if (this.session !== session) return;
+        try {
+          const pose = xrFrame.getViewerPose(space);
+          renderer.clear(layer.framebuffer);
+          if (pose) {
+            if (this.recenterPending) {
+              renderer.heading = Math.atan2(pose.transform.matrix[8], pose.transform.matrix[10]);
+              this.controls.recenter(pose.transform.matrix); this.recenterPending = false;
+            }
+            this.controls.update(xrFrame, space, session.inputSources, time);
+            const ready = this.video && renderer.upload(this.video);
+            for (const view of pose.views) {
+              const viewport = layer.getViewport(view);
+              if (ready) renderer.draw(view.eye, viewport, view.projectionMatrix, view.transform.inverse.matrix);
+              this.controls.draw(view, viewport);
+            }
+          }
+          this.frame = session.requestAnimationFrame(frame);
+        } catch (error) { this.fail(error); }
+      };
+      this.frame = session.requestAnimationFrame(frame);
+      this.pending = false; return true;
+    } catch (error) {
+      if (request !== this.request) return false;
+      this.pending = false;
+      if (session) { this.stop(); this.options.error?.(error); }
+      this.onStatus(error.message || 'VR permission was not granted.');
+      throw error;
+    }
+  }
+  preview(video, spec, parent) {
+    this.clearScene(); this.mode = 'preview'; this.createRenderer(spec); this.video = video;
+    parent.append(this.canvas);
+    const renderer = this.renderer;
+    const projection = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, -1.002, -1, 0, 0, -.02002, 0]);
+    const frame = () => {
+      if (this.mode !== 'preview' || this.renderer !== renderer) return;
+      try {
+        renderer.clear();
+        if (this.video && renderer.upload(this.video)) {
+          renderer.draw('left', { x: 0, y: 0, width: 480, height: 480 }, projection, identity());
+          renderer.draw('right', { x: 480, y: 0, width: 480, height: 480 }, projection, identity());
+        }
+        this.frame = requestAnimationFrame(frame);
+      } catch (error) { this.fail(error); }
+    };
+    this.frame = requestAnimationFrame(frame);
+  }
+  // Compatibility entry for the standalone device measurement harness.
+  async start(video, spec, parent = null, controlsVideo = video) {
+    if (parent) this.preview(video, spec, parent);
+    else if (await this.enter()) this.setSource(video, spec);
+    if (this.active) {
+      await controlsVideo.play();
+      if (video !== controlsVideo) await video.play();
+    }
+  }
+  fail(error) { this.stop(); this.options.error?.(error); this.onStatus(error.message || String(error)); }
   stop() {
-    if (this.session) this.session.end().catch(() => {});
+    ++this.request;
+    this.session?.end().catch(() => {});
     this.cleanup();
   }
-  cleanup() {
-    if (!this.active) return;
-    this.active = false;
-    if (this.session && this.frame) this.session.cancelAnimationFrame(this.frame);
-    else if (this.frame) cancelAnimationFrame(this.frame);
-    this.frame = null; this.session = null;
+  clearScene() {
+    if (this.frame) {
+      if (this.session) this.session.cancelAnimationFrame(this.frame);
+      else cancelAnimationFrame(this.frame);
+    }
+    this.frame = null;
+    this.controls?.dispose(); this.controls = null;
     this.renderer?.dispose(); this.renderer = null; this.canvas?.remove(); this.canvas = null;
-    this.onEnd();
+    this.video = null; this.mode = null;
+  }
+  cleanup() {
+    const wasActive = this.active;
+    ++this.request; this.pending = false;
+    this.clearScene(); this.session = null;
+    if (wasActive) this.onEnd();
   }
 }

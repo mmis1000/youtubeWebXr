@@ -44,7 +44,7 @@ export function meshProjection(compressed = false, custom = false) {
   const raw = custom ? concat(meshBox(0, 0.5), meshBox(0.5, 1)) : meshBox();
   return box('mshp', new Uint8Array(8), Buffer.from(compressed ? 'dfl8' : 'raw '), compressed ? deflateRawSync(raw) : raw);
 }
-const ebml = (id, data) => {
+export const ebml = (id, data) => {
   const hex = id.toString(16); const key = Buffer.from(hex.length % 2 ? `0${hex}` : hex, 'hex');
   const size = data.length < 127 ? [0x80 | data.length] : [0x40 | (data.length >> 8), data.length & 255];
   return concat(key, size, data);

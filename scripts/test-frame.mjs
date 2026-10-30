@@ -10,7 +10,7 @@ try {
   await page.goto('https://www.youtube.com/watch?v=yVLssFEqKmo', { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => window.__youtubeWebXRLoaded && document.querySelector('video.html5-main-video')?.readyState >= 1);
   await page.evaluate(() => {
-    const video = document.querySelector('video.html5-main-video'); video.pause(); video.currentTime = 90;
+    const video = document.querySelector('video.html5-main-video'); video.currentTime = 90; video.play().catch(()=>{});
     window.frameTest = { frames: 0, poseFrames: 0 };
     const requestFrame = XRSession.prototype.requestAnimationFrame;
     XRSession.prototype.requestAnimationFrame = function(callback) {
@@ -27,18 +27,15 @@ try {
       return pose;
     };
   });
-  await page.getByRole('button', { name: 'WebXR', exact: true }).click();
-  await page.getByRole('button', { name: 'Load stereo stream', exact: true }).click();
-  await page.getByText('VR stream — MP4: mesh, left-right stereo.', { exact: true }).waitFor({ timeout: 35000 });
+  await page.getByRole('button', { name: 'VR details', exact: true }).click();
   await page.getByRole('button', { name: 'Eye preview', exact: true }).click();
   await page.waitForFunction(() => {
     const v = document.querySelector('video[data-youtube-webxr-stereo]');
     return v?.readyState >= 3 && v.currentTime > 91;
   }, null, { timeout: 25000 });
   await page.screenshot({ path: 'test-output/frame-preview.png' });
-  await page.getByRole('button', { name: 'Stop', exact: true }).click();
   await page.getByRole('button', { name: 'Enter VR', exact: true }).click();
-  await page.getByText('VR active. Select to pause or play; squeeze to recenter.').waitFor({ timeout: 30000 });
+  await page.getByRole('button', { name: 'Exit VR', exact: true }).waitFor({ timeout: 30000 });
   await page.waitForFunction(() => window.frameTest.poseFrames > 10, null, { timeout: 20000 });
   await page.getByRole('button', { name: 'Show diagnostics', exact: true }).click();
   const report = JSON.parse(await page.getByRole('textbox', { name: 'Playback diagnostics' }).inputValue());

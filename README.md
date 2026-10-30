@@ -30,33 +30,40 @@ Enable one installation at a time. A duplicate-load guard makes the first loaded
 
 ## Play a VR180 video
 
-1. Open a YouTube watch page and start playback.
-2. Open **WebXR** at the lower right.
-3. Choose a stereo stream resolution and click **Load stereo stream**. Start with 1080p.
-4. Leave **Projection** on **Automatic**. **Eye preview** displays both eyes in the browser window.
-5. Stop the preview, click **Enter VR**, and allow the browser's VR permission prompt.
+The UX update below is available in source builds. The published v0.1.0 package retains the earlier Load stereo / Enter VR flow until the next release.
 
-YouTube controls audio, seeking, and playback speed. In VR, controller **select** pauses or resumes playback, and **squeeze** recenters horizontally. Use the headset's normal system action to exit VR. Controller actions still need full on-device validation.
+1. Open a YouTube watch page and click **Enter VR** in YouTube's player controls.
+2. Allow the browser's VR permission prompt. Stereo preparation happens inside the session, with visible controllers, loading status, and Exit.
+3. Use the headset panel for play/pause, seeking, source resolution, recentering, and exit. Point at a control and select it.
+4. The small **VR source** selector on the YouTube page mirrors the headset selector while VR is active. Either changes quality within the running session.
+5. The arrow beside **Enter VR** opens **VR details** for Eye preview, manual projection, and diagnostics. An active preview can enter VR directly.
 
-The resolution selector sets a maximum. The loader can select a lower eligible stream; check the displayed decoded dimensions. Changing the selector requires clicking **Load stereo stream** again. Dimensions describe the complete frame containing both eyes.
+YouTube supplies audio and the playback clock. In VR, **select/trigger** on a control activates it. Press the trigger away from the panel to hide the interface, or use **Hide UI**. While hidden, press the trigger anywhere to show it again. This preserves playback; use the panel's **Play/Pause** button to control playback. Controller outlines stay visible while the panel and pointing rays are hidden. Preparing a source, seeking, or a new playback error reveals the panel. **Squeeze** recenters horizontally. A thumbstick deflection seeks ten seconds once; return it to neutral before seeking again. The timeline commits a seek on release. Exit through the headset panel, the page's Exit VR button, or the system action.
 
-**Show diagnostics** reports dimensions, projection, stereo layout, synchronization drift, and WebXR support. It includes the video ID and format summaries, while omitting stream URLs, cookies, and tokens.
+Entry uses the last successfully used VR resolution, or the closest eligible resolution; ties choose the lower one. First use targets 1080p. Both selectors show the actual source resolution, including fallback. Failed switches leave the saved resolution unchanged. Dimensions describe the complete frame containing both eyes. Video is paused during preparation, quality changes, and controller seeks so audio and stereo resume together.
+
+**Show diagnostics** in VR details reports dimensions, projection, stereo layout, synchronization drift, and WebXR support. It includes the video ID and selected format identifier, while omitting stream URLs, cookies, and tokens. [The UX design](docs/ux-design.md) describes the interaction and acceptance criteria.
+
+The headset panel uses a fixed-height graphite card with rounded controls. Its quality menu replaces the control row, highlights the active resolution, and marks a pending choice with a spinner. Preparation failures retain the target resolution and put Retry in the primary-control position. The slashed-eye icon hides the panel. VR details and YouTube's settings menu close each other when opened. Browsers without immersive VR support show an explanation in Details.
 
 ## Supported playback and limits
 
 - Loads a separate stereo representation through YouTube's `VISIONOS` player API, using the page's visitor identifier with account cookies omitted.
-- Streams MP4 byte ranges through MediaSource using `sidx` segment indices and a bounded buffer.
-- Reads MP4 and WebM stereo/projection metadata from the original web player, plus MP4 metadata from the separate stereo stream.
+- Streams MP4 and WebM byte ranges through MediaSource using MP4 `sidx` or WebM cue indices and a bounded buffer.
+- Follows the media CDN's text redirects (`alr=yes`) with separate browser requests, preserving the page origin for CORS. This uses the same page permissions in both builds.
+- Reads MP4 and WebM stereo/projection metadata from the original web player and separate stereo streams.
 - Renders raw or deflated projection meshes, cropped equirectangular projections, eye-specific layouts, and static orientation metadata.
 - Uses headset rotation for viewing direction; recorded video has a fixed camera origin.
 
-The separate stereo loader currently accepts **MP4 only**. A video's higher-resolution WebM/VP9 streams are skipped. For example, `38jcxsq8EBU` selects its 1920 × 1080 H.264 stream at both the 1080p and 2160p settings; its actual 4K stereo representation is WebM/VP9.
+The resolution menus include MP4 and WebM VR sources **at 720p or higher** that the browser reports as decodable through MediaSource. Each listed height has a checked stereo layout, supported projection, and valid segment index. Flat video, unsupported codecs/projections, protected formats, and sources whose headers or indexes cannot be read are excluded. A saved resolution below 720p selects the closest eligible source at or above 720p. For example, `38jcxsq8EBU` offers 720p/1080p H.264 and 1440p/2160p VP9 WebM; its actual 3840 × 2160 WebM source has been decoded on Frame. Codec support does not guarantee smooth playback at every resolution.
 
-YouTube's client API is undocumented and can change. Some videos or sessions may lack directly playable stereo streams. Failures appear in the WebXR panel. The browser must support the selected codec and permit video texture uploads.
+YouTube's client API is undocumented and can change. Some videos or sessions may lack directly playable stereo streams. During VR, failures appear in the headset and on the page, with retry and exit available. The browser must support the selected codec and permit video texture uploads.
+
+Validated source headers and indexes are cached within the active preview/VR session, so quality changes reuse discovery results. The cache expires within five minutes or before a signed stream URL expires. Exit, navigation, and playback/preparation errors clear it; Retry refreshes discovery.
 
 The original YouTube video keeps running for audio and controls. A separate muted stereo video follows its clock, correcting drift above 150 ms. This uses two decoders and extra bandwidth. Slow decoding or buffering can trigger repeated synchronization seeks.
 
-Metadata observation covers main-thread MediaSource playback. Initialization data missed before injection, worker-owned MediaSource, and other playback paths may require **Load stereo stream**. Explicit cubemap projections, camera-motion stabilization tracks, spherical V1 XML, and mesh CRC validation are not implemented. Metadata capture and mesh decompression have size limits.
+Metadata observation covers main-thread MediaSource playback. When the original video has no usable stereo projection metadata, entry and preview request a separate stereo stream. Explicit cubemap projections, camera-motion stabilization tracks, spherical V1 XML, and mesh CRC validation are not implemented. Metadata capture and mesh decompression have size limits.
 
 Manual VR180 layouts are available when you know the source packing. A monoscopic recording provides one captured eye view.
 
@@ -69,7 +76,7 @@ Hardware decoding depends on the browser and operating-system driver. Related pr
 
 With those fixes, testing on October 30–31, 2026 confirmed hardware AV1 playback and correct 4K VR stereo/tracking. Separate local-file tests sustained 4K60 and synthetic 8K30; the tested real 8K60 stream advanced at roughly half speed. These are device/build-specific measurements, not guarantees for every video or the two-video userscript path.
 
-The installed Violentmonkey userscript was tested with `38jcxsq8EBU` on October 31. Both resolution settings above played smoothly in native VR after restarting Chromium. Reported motion jumps around scene transitions were subsequently identified by the user as present in the source video; a local hardware-decoding test over 12–25 seconds recorded zero dropped frames.
+The earlier installed Violentmonkey userscript was tested with `38jcxsq8EBU` on October 31. Its 1080p and 2160p settings both selected the 1080p MP4 source and played smoothly in native VR after restarting Chromium. Reported motion jumps around scene transitions were subsequently identified by the user as present in the source video; a local hardware-decoding test over 12–25 seconds recorded zero dropped frames. The current source build adds the higher-resolution WebM representations.
 
 [Earlier investigation notes](docs/steam-frame-investigation.md) preserve the original software-decoding limits and the first V4L2 deployment. They describe historical builds and test profiles.
 
@@ -91,9 +98,10 @@ Browser tests require FFmpeg on `PATH`. They default to installed Microsoft Edge
 npx playwright install chromium
 npm run test:browser
 npm run test:userscript
+npm run test:panel
 ```
 
-Tests generate a stereo color fixture, play it through MediaSource, verify eye colors and orientation through WebGL pixels, exercise immersive sessions through IWER, and check navigation cleanup. They run each generated bundle in the page context. Real userscript-manager installation and native headset behavior are covered by the device checks described above.
+Tests generate indexed MP4 and VP9 WebM stereo fixtures, play them through MediaSource, and verify eye colors and orientation through WebGL pixels. IWER tests exercise VR format filtering, switching and seeking across containers, permission refusal, cancellation, nearest-resolution selection, page/headset source switching, controller pause/recenter, thumbstick latching, timeline release, media failure/retry, cleanup, and YouTube control-bar replacement. Both generated bundles run in the page context. A real headset is still needed to judge physical controller alignment and panel readability.
 
 `npm run test:youtube` is an optional live integration test. It depends on YouTube availability and is excluded from CI. The latest earlier fresh-profile run encountered an original-player failure after seeking that also reproduced without this project.
 
@@ -111,5 +119,7 @@ To publish a release, update the version in `extension/manifest.json` and `packa
 - [Spherical Video V2 metadata](https://github.com/google/spatial-media/blob/master/docs/spherical-video-v2-rfc.md)
 - [yt-dlp YouTube client configuration](https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/youtube/_base.py)
 - [WebXR Device API](https://www.w3.org/TR/webxr/)
+- [WebM container and cue index](https://www.webmproject.org/docs/container/)
+- [WebM MediaSource byte stream format](https://www.w3.org/TR/mse-byte-stream-format-webm/)
 
 All runtime code is bundled locally. Requests go directly from the YouTube page to YouTube and its media CDN. There is no background service or download helper. Playwright and IWER are development dependencies.

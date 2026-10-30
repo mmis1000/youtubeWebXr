@@ -1,4 +1,6 @@
 import { boxes } from './metadata.js';
+import { fetchMedia } from './media.js';
+import { readWebMIndex } from './webm.js';
 
 export function readIndex(bytes, absoluteOffset) {
   const box = boxes(bytes).find(x => x.type === 'sidx');
@@ -29,7 +31,7 @@ export function readIndex(bytes, absoluteOffset) {
 export async function fetchRange(rawURL, start, end, signal) {
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || end - start > 64 * 1024 * 1024) throw new Error('Invalid media byte range.');
   const url = new URL(rawURL); url.searchParams.set('range', `${start}-${end}`);
-  const response = await fetch(url, { credentials: 'omit', signal });
+  const response = await fetchMedia(url, signal);
   if (!response.ok) throw new Error(`Stereo media request failed (${response.status}). YouTube rejected this segment; try loading the stereo stream again.`);
   const reader = response.body.getReader(), chunks = []; let size = 0;
   try {
@@ -44,6 +46,13 @@ export async function fetchRange(rawURL, start, end, signal) {
   const bytes = new Uint8Array(size); let offset = 0;
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
   return bytes;
+}
+
+export async function loadIndex(format, initBytes, signal) {
+  if (!format.indexRange) throw new Error('This stereo format has no byte-range index.');
+  const start = Number(format.indexRange.start), end = Number(format.indexRange.end);
+  const bytes = await fetchRange(format.url, start, end, signal);
+  return format.mimeType.startsWith('video/webm') ? readWebMIndex(bytes, initBytes, format) : readIndex(bytes, start);
 }
 
 function event(target, name, signal) {
@@ -68,9 +77,7 @@ export class RangeStream {
   async initialize() {
     const { format, initBytes } = this.result, signal = this.controller.signal;
     if (!MediaSource.isTypeSupported(format.mimeType)) throw new Error('This browser cannot decode the selected stereo format.');
-    if (!format.indexRange) throw new Error('This stereo format has no byte-range index.');
-    const start = Number(format.indexRange.start), end = Number(format.indexRange.end);
-    this.segments = readIndex(await fetchRange(format.url, start, end, signal), start);
+    this.segments = this.result.segments || await loadIndex(format, initBytes, signal);
     const media = this.media = new MediaSource();
     this.objectURL = URL.createObjectURL(media);
     const opened = event(media, 'sourceopen', signal);

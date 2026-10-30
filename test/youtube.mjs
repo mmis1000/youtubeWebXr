@@ -16,11 +16,9 @@ try {
   await page.waitForSelector('video.html5-main-video', {state:'attached'});
   await page.evaluate(()=>{const v=document.querySelector('video.html5-main-video');v.muted=true;v.play().catch(()=>{});});
   await page.waitForFunction(()=>document.querySelector('video.html5-main-video')?.videoWidth > 0,null,{timeout:30000});
-  await page.getByRole('button',{name:'WebXR',exact:true}).click();
-  await page.getByRole('button',{name:'Load stereo stream',exact:true}).click();
-  await page.getByText('VR stream — MP4: mesh, left-right stereo.',{exact:true}).waitFor({timeout:35000});
+  await page.getByRole('button',{name:'VR details',exact:true}).click();
   await page.getByRole('button',{name:'Eye preview',exact:true}).click();
-  await page.getByText('Eye preview: left eye on the left, right eye on the right.').waitFor();
+  await page.locator('#youtube-webxr canvas').waitFor({timeout:35000});
   await page.waitForFunction(()=>document.querySelector('video[data-youtube-webxr-stereo]')?.readyState >= 2,null,{timeout:30000});
   await page.screenshot({path:'test-output/youtube-stereo-preview.png'});
   await page.evaluate(()=>{document.querySelector('video.html5-main-video').currentTime=90;});
@@ -30,9 +28,8 @@ try {
   },null,{timeout:30000});
   await page.evaluate(()=>document.querySelector('video.html5-main-video').pause());
   await page.waitForFunction(()=>document.querySelector('video[data-youtube-webxr-stereo]').paused);
-  await page.getByRole('button',{name:'Stop',exact:true}).click();
   await page.getByRole('button',{name:'Enter VR',exact:true}).click();
-  await page.getByText('VR active. Select to pause or play; squeeze to recenter.').waitFor({timeout:30000});
+  await page.getByRole('button',{name:'Exit VR',exact:true}).waitFor({timeout:30000});
   assert.equal(await page.evaluate(()=>!!window.testDevice.activeSession),true);
   await page.waitForFunction(()=>document.querySelector('video[data-youtube-webxr-stereo]')?.readyState >= 2);
   await page.evaluate(() => new Promise(resolve => {
@@ -40,7 +37,7 @@ try {
     session.requestAnimationFrame(() => session.requestAnimationFrame(resolve));
   }));
   await page.screenshot({path:'test-output/youtube-xr.png'});
-  await page.getByRole('button',{name:'Show diagnostics',exact:true}).click();
+  await page.getByRole('button',{name:'Show diagnostics',exact:true}).evaluate(b=>b.click());
   const report=JSON.parse(await page.getByRole('textbox',{name:'Playback diagnostics'}).inputValue());
   assert.equal(report.stereoStream.stereoMode,2);
   assert.equal(report.stereoStream.meshCount,2);

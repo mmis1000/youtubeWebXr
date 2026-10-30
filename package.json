@@ -8,6 +8,7 @@
     "test": "node --test test/*.test.mjs",
     "test:browser": "node test/browser.mjs",
     "test:userscript": "node test/browser.mjs --userscript",
+    "test:panel": "node test/panel.mjs",
     "test:youtube": "node test/youtube.mjs",
     "test:frame": "node scripts/test-frame.mjs",
     "test:resolution": "node scripts/test-frame-resolution.mjs"

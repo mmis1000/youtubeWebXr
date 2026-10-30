@@ -81,7 +81,7 @@ function vint(bytes, p, keepMarker = false) {
   return { length, value, unknown };
 }
 
-function elements(bytes, start, end) {
+export function elements(bytes, start = 0, end = bytes.length) {
   const out = [];
   for (let p = start; p < end;) {
     const id = vint(bytes, p, true);
@@ -92,7 +92,7 @@ function elements(bytes, start, end) {
     const stop = size.unknown ? end : body + size.value;
     // Segment may contain media bytes beyond the captured initialization prefix.
     if (stop > end && id.value !== 0x18538067) break;
-    out.push({ id: id.value, body, end: Math.min(stop, end) });
+    out.push({ id: id.value, start: p, body, end: Math.min(stop, end) });
     p = stop;
   }
   return out;

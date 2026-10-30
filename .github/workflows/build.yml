@@ -40,6 +40,7 @@ jobs:
         run: |
           npm run test:browser
           npm run test:userscript
+          npm run test:panel
       - name: Package downloads
         run: python3 scripts/package.py
       - uses: actions/upload-artifact@v4
@@ -56,6 +57,11 @@ jobs:
             test-output/*browser-result.json
             test-output/*eye-preview.png
             test-output/*xr-session.png
+            test-output/*xr-controls.png
+            test-output/*xr-ui-hidden.png
+            test-output/xr-panel-review.png
+            test-output/*page-narrow.png
+            test-output/*browser-failure.png
           if-no-files-found: ignore
 
   release:

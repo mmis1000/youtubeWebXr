@@ -1,0 +1,76 @@
+<!doctype html><meta charset=utf-8><body style="margin:0;padding:24px;background:#3a3f47;color:#fff;font:20px system-ui">
+<script>
+const C = { surface:'#15171c', raised:'#24272e', hover:'#30343d', line:'rgba(255,255,255,.10)',
+  text:'#f1f2f4', sub:'#a3a8b2', dim:'#5d626c', accent:'#ff4e45', track:'#3a3d45', warn:'#ffb547', ring:'rgba(255,255,255,.55)' };
+const F = (w, s) => `${w} ${s}px "Segoe UI", Roboto, "Noto Sans", sans-serif`;
+const W = 1024, H = 312;
+function rr(c,x,y,w,h,r){c.beginPath();c.roundRect(x,y,w,h,r);}
+function icon(c, name, x, y, s, color){
+  c.save(); c.translate(x,y); c.fillStyle=color; c.strokeStyle=color; c.lineWidth=Math.max(2.5,s*.1); c.lineCap='round'; c.lineJoin='round';
+  if(name==='play'){c.beginPath();c.moveTo(-s*.26,-s*.36);c.lineTo(s*.4,0);c.lineTo(-s*.26,s*.36);c.closePath();c.fill();}
+  if(name==='pause'){rr(c,-s*.3,-s*.34,s*.2,s*.68,3);c.fill();rr(c,s*.1,-s*.34,s*.2,s*.68,3);c.fill();}
+  if(name==='back'||name==='fwd'){const d=name==='back'?-1:1;
+    c.beginPath(); if(d<0) c.arc(0,0,s*.42,-Math.PI*.5,Math.PI*1.1); else c.arc(0,0,s*.42,-Math.PI*.5,-Math.PI*1.1,true); c.stroke();
+    c.beginPath(); c.moveTo(0,-s*.42); c.lineTo(-d*s*.16,-s*.56); c.moveTo(0,-s*.42); c.lineTo(-d*s*.16,-s*.28); c.stroke();
+    c.font=F(700,s*.32);c.textAlign='center';c.textBaseline='middle';c.fillText('10',0,s*.03);}
+  if(name==='recenter'){c.beginPath();c.arc(0,0,s*.28,0,Math.PI*2);c.stroke();c.beginPath();c.arc(0,0,s*.08,0,Math.PI*2);c.fill();
+    for(const [a,b] of [[0,-1],[0,1],[-1,0],[1,0]]){c.beginPath();c.moveTo(a*s*.28,b*s*.28);c.lineTo(a*s*.46,b*s*.46);c.stroke();}}
+  if(name==='hide'){c.beginPath();c.ellipse(0,0,s*.4,s*.24,0,0,Math.PI*2);c.stroke();c.beginPath();c.arc(0,0,s*.1,0,Math.PI*2);c.fill();
+    c.beginPath();c.moveTo(-s*.38,-s*.34);c.lineTo(s*.38,s*.34);c.stroke();}
+  if(name==='warn'){c.beginPath();c.moveTo(0,-s*.4);c.lineTo(s*.42,s*.34);c.lineTo(-s*.42,s*.34);c.closePath();c.stroke();
+    c.beginPath();c.moveTo(0,-s*.1);c.lineTo(0,s*.1);c.stroke();c.beginPath();c.arc(0,s*.22,s*.03,0,7);c.fill();}
+  if(name==='spin'){c.beginPath();c.arc(0,0,s*.34,-Math.PI/2,Math.PI*0.9);c.stroke();}
+  c.restore();
+}
+const fmt=t=>`${Math.floor(t/60)}:${String(Math.floor(t%60)).padStart(2,'0')}`;
+function paint(s){
+  const cv=document.createElement('canvas'); cv.width=W; cv.height=H; const c=cv.getContext('2d');
+  rr(c,1,1,W-2,H-2,36); c.fillStyle=C.surface; c.fill(); c.strokeStyle=C.line; c.lineWidth=2; c.stroke();
+  const hov=id=>s.hover===id, blocked=s.busy||!!s.error;
+  c.textBaseline='alphabetic'; c.textAlign='left'; c.fillStyle=C.text; c.font=F(600,30);
+  let t=s.title; while(c.measureText(t+'…').width>800) t=t.slice(0,-1); if(t!==s.title) t=t.trimEnd()+'…'; c.fillText(t,48,62);
+  c.font=F(400,23);
+  if(s.error){icon(c,'warn',60,92,26,C.warn); c.fillStyle=C.warn; c.fillText(s.error,84,100);}
+  else if(s.busy){icon(c,'spin',60,92,26,C.sub); c.fillStyle=C.sub; c.fillText(s.status,84,100);}
+  else {c.fillStyle=C.sub; c.fillText(`${s.quality}p · Stereo 180°`,48,100);}
+  if(hov('hide')){rr(c,900,30,76,76,38);c.fillStyle=C.hover;c.fill();} icon(c,'hide',938,68,40,C.sub);
+  const y=150, x0=128, x1=896, f=s.time/s.duration, px=x0+(x1-x0)*f;
+  c.font=F(500,22); c.fillStyle=C.sub; c.textAlign='right'; c.fillText(fmt(s.time),108,y+8); c.textAlign='left'; c.fillText(fmt(s.duration),916,y+8);
+  rr(c,x0,y-4,x1-x0,8,4); c.fillStyle=C.track; c.fill(); rr(c,x0,y-4,Math.max(8,px-x0),8,4); c.fillStyle=blocked?C.dim:C.accent; c.fill();
+  c.beginPath(); c.arc(px,y,hov('seek')?14:10,0,7); c.fillStyle=blocked?C.dim:C.text; c.fill();
+  if(hov('seek')){c.font=F(600,22);c.textAlign='center';c.fillStyle=C.text;c.fillText(fmt(s.time),px,y-22);}
+  const cy=240;
+  const pill=(id,x,w,label,ic,opt={})=>{ rr(c,x,cy-36,w,72,36); c.fillStyle=opt.fill||(hov(id)?C.hover:C.raised); c.fill();
+    if(opt.stroke){c.strokeStyle=opt.stroke;c.lineWidth=2;c.stroke();}
+    if(hov(id)){rr(c,x-5,cy-41,w+10,82,41);c.strokeStyle=C.ring;c.lineWidth=3;c.stroke();}
+    const col=opt.color||C.text; c.font=F(600,24); const tw=c.measureText(label).width; let tx=x+w/2;
+    if(ic){const total=30+12+tw; icon(c,ic,x+w/2-total/2+15,cy,30,col); tx=x+w/2-total/2+42+tw/2;}
+    c.fillStyle=col; c.textAlign='center'; c.textBaseline='middle'; c.fillText(label,tx,cy+1); c.textBaseline='alphabetic'; };
+  const circle=(id,x,r,ic,primary,dis)=>{ c.beginPath(); c.arc(x,cy,r,0,7);
+    c.fillStyle=primary?(dis?C.dim:C.text):(hov(id)&&!dis?C.hover:C.raised); c.fill();
+    if(hov(id)&&!dis){c.strokeStyle=C.ring;c.lineWidth=3;c.beginPath();c.arc(x,cy,r+6,0,7);c.stroke();}
+    icon(c,ic,x,cy,r,primary?C.surface:(dis?C.dim:C.text)); };
+  if(s.menu){
+    pill('menu-back',48,124,'‹ Back',null);
+    const w=132, gap=12, start=48+124+32;
+    s.qualities.forEach((h,i)=>{ const x=start+i*(w+gap), act=h===s.quality&&!s.busy, pend=s.busy&&h===s.requested;
+      pill('q'+h,x,w,`${h}p`,pend?'spin':null, act?{fill:C.text,color:C.surface}:pend?{stroke:C.sub}:{}); });
+  } else {
+    pill('recenter',48,200,'Recenter','recenter');
+    circle('back',404,38,'back',false,blocked);
+    if(s.error) pill('retry',452,120,'Retry',null,{fill:C.warn,color:C.surface});
+    else circle('toggle',512,46,s.busy?'spin':s.paused?'play':'pause',true,s.busy);
+    circle('fwd',620,38,'fwd',false,blocked);
+    pill('quality',700,150,`${s.busy||s.error?s.requested:s.quality}p  ▾`,null);
+    pill('exit',866,110,'Exit',null);
+  }
+  return cv;
+}
+const base={title:'VR180 — Mountain hike in Yosemite National Park with a long title',time:78,duration:162,quality:1080,requested:1080,qualities:[720,1080,1440,2160,4320],paused:false,busy:false,error:''};
+for(const [name,ch] of [['Playing — pointer on Pause',{hover:'toggle'}],['Paused — pointer on timeline',{paused:true,hover:'seek'}],
+  ['Quality menu replaces the control row',{menu:true,hover:'q1440'}],['Switching to 2160p (menu open)',{menu:true,busy:true,requested:2160,status:'Loading 2160p…'}],
+  ['Loading (menu closed)',{busy:true,requested:2160,status:'Loading 2160p…'}],['Error',{error:'Media request failed (503).',requested:2160}]]){
+  const h=document.createElement('div');h.textContent=name;h.style.margin='14px 0 6px';document.body.append(h);
+  const cv=paint({...base,...ch}); cv.style.cssText='width:1024px;display:block'; document.body.append(cv);
+}
+</script>

@@ -44,6 +44,7 @@ const snapshot = () => page.evaluate(() => {
     status: document.querySelector('#youtube-webxr')?.shadowRoot.querySelector('p')?.textContent };
 });
 try {
+  await page.addInitScript(height => localStorage.setItem('youtube-webxr:last-resolution', String(height)), height);
   await page.goto('https://www.youtube.com/watch?v=yVLssFEqKmo', { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => window.__youtubeWebXRLoaded && document.querySelector('video.html5-main-video')?.readyState >= 1);
   await page.evaluate(startTime => {
@@ -72,16 +73,12 @@ try {
       return pose;
     };
   }, startTime);
-  await page.getByRole('button', { name: 'WebXR', exact: true }).click();
-  if (height === 1440) await page.getByRole('combobox', { name: 'Stereo stream resolution' }).evaluate(select => {
-    select.add(new Option('1440p test', '1440'));
-  });
-  await page.getByRole('combobox', { name: 'Stereo stream resolution' }).selectOption(String(height));
   const responsePromise = page.waitForResponse(r => r.url().includes('/youtubei/v1/player') && r.request().postDataJSON()?.context?.client?.clientName === 'VISIONOS');
-  await page.getByRole('button', { name: 'Load stereo stream', exact: true }).click();
+  await page.getByRole('button', { name: 'Enter VR', exact: true }).click();
   const data = await (await responsePromise).json();
   report.offeredFormats = (data.streamingData?.adaptiveFormats || []).filter(f => f.mimeType?.startsWith('video/')).map(f => ({ itag: f.itag, width: f.width, height: f.height, fps: f.fps, bitrate: f.bitrate, mimeType: f.mimeType, projectionType: f.projectionType }));
-  await page.getByText('VR stream — MP4: mesh, left-right stereo.', { exact: true }).waitFor({ timeout: 35000 });
+  await page.waitForFunction(() => document.querySelector('video[data-youtube-webxr-stereo]')?.readyState >= 2, null, { timeout: 35000 });
+  await page.getByRole('button', { name: 'VR details', exact: true }).evaluate(b=>b.click());
   await page.getByRole('button', { name: 'Show diagnostics', exact: true }).click();
   report.diagnostics = JSON.parse(await page.getByRole('textbox', { name: 'Playback diagnostics' }).inputValue());
   report.selectedFormat = report.offeredFormats.find(f => f.itag === report.diagnostics.stereoStream?.itag);
@@ -100,15 +97,13 @@ try {
     v.requestVideoFrameCallback(callback);
   });
   await page.evaluate(suppress => { window.suppressStereoSyncSeeks = suppress; }, suppressSyncSeeks);
-  await page.getByRole('button', { name: 'Enter VR', exact: true }).click();
-  await page.getByText('VR active. Select to pause or play; squeeze to recenter.').waitFor({ timeout: 30000 });
   await page.waitForFunction(() => window.frameResolutionTest.poseFrames >= 20, null, { timeout: 20000 });
   report.samples.push(await snapshot());
   for (let elapsed = 0; elapsed < duration; elapsed += 5) {
     await new Promise(resolve => setTimeout(resolve, Math.min(5, duration - elapsed) * 1000));
     const sample = await snapshot(); report.samples.push(sample);
     console.log(JSON.stringify(sample));
-    if (sample.status !== 'VR active. Select to pause or play; squeeze to recenter.') throw new Error(sample.status || 'VR session ended.');
+    if (!sample.status?.startsWith('Playing ')) throw new Error(sample.status || 'VR session ended.');
   }
   const first = report.samples[0], last = report.samples.at(-1), wall = last.wallTime - first.wallTime;
   report.measurement = { wallSeconds: wall, mediaSeconds: last.time - first.time, decodedWidth: last.width, decodedHeight: last.height,
