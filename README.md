@@ -1,145 +1,115 @@
 # YouTube WebXR VR180
 
-An unpacked Chromium Manifest V3 extension that adds a WebXR viewer to YouTube. The initial target is Steam Frame's standalone Chromium browser, treated as a standard WebXR environment.
+[![Build and test](https://github.com/mmis1000/youtubeWebXr/actions/workflows/build.yml/badge.svg)](https://github.com/mmis1000/youtubeWebXr/actions/workflows/build.yml)
 
-**Status: stereo streaming and native WebXR verified on Steam Frame.** The reference video `yVLssFEqKmo` plays at 1080p with two projection meshes and native left/right WebXR views. The user confirmed correct orientation, stereo depth, and head tracking in the headset. Device testing reached 122 seconds and also replayed across the earlier 48-second failure point after switching the YouTube client to `VISIONOS`. Resolution testing found 1080p performed best in this browser setup; 1440p stuttered, while 4K and 8K stalled. Controller actions on hardware still need testing.
+A Chromium extension and userscript that load YouTube VR180 stereo streams and render their projection metadata in WebXR. Both builds use the same source and provide the same controls.
 
-## Try it
+Stereo depth, orientation, head tracking, and native immersive playback have been verified on Steam Frame. The userscript has also been tested there through Violentmonkey. Other headsets need a browser with immersive WebXR and either extension or userscript support.
 
-The built extension is in `dist/`.
+## Install
 
-1. Open your browser's extension manager and enable developer mode.
-2. Choose **Load unpacked** and select this project's `dist` folder.
-3. Reload a YouTube watch page and start playback. Reloading lets the extension observe the stream's initialization metadata.
-4. Open **WebXR** at the lower right. Select a resolution and click **Load stereo stream**. Start with 1080p.
-5. Leave **Projection** on **Automatic**. Use **Eye preview** to inspect both eyes. Stop the preview, then click **Enter VR**.
+Download a build from [Releases](https://github.com/mmis1000/youtubeWebXr/releases/latest).
 
-In VR, a controller's **select** action pauses or resumes playback. **Squeeze** recenters the video horizontally. The headset's normal system action exits immersive mode. YouTube's controls handle audio, seeking, and playback speed. The extension's resolution selector controls stereo quality; click **Load stereo stream** again after changing it.
+### Userscript
 
-Manual VR180 layouts are available for streams whose packing you have independently identified. A monoscopic source provides one captured view; selecting a stereo layout cannot supply the missing eye.
+1. Install a userscript manager that supports injection into the page's JavaScript context, such as Violentmonkey or Tampermonkey.
+2. Open [youtube-webxr.user.js](https://github.com/mmis1000/youtubeWebXr/releases/latest/download/youtube-webxr.user.js) and accept the manager's installation prompt. You can also create a script in its editor and paste the entire downloaded file.
+3. Enable the script and reload YouTube. If Chromium requests permission to run user scripts, enable it for your manager.
 
-**Show diagnostics** provides frame dimensions, detected container/projection/stereo mode, WebXR availability, and advertised format summaries. It omits stream URLs, cookies, and tokens. The video ID is included.
+The script is self-contained and uses `@grant none`. It requests page-context injection at document start. The release download and update URLs are included in its header for managers that support automatic updates.
 
-## Requirements and current coverage
+### Extension
 
-The intended outcome is stereoscopic VR180 playback from a YouTube watch page, with the correct projection for each eye and headset-controlled viewing direction.
+1. Download `youtube-webxr-extension-VERSION.zip` from the release and extract it.
+2. Open `chrome://extensions`, enable **Developer mode**, and choose **Load unpacked**.
+3. Select the extracted directory containing `manifest.json`, then reload YouTube.
 
-This prototype implements:
+This is an unpacked Manifest V3 extension. To update it, extract a newer release into its installation directory and click **Reload** in the extension manager.
 
-- YouTube `VISIONOS` player requests using the page's visitor identifier, with account cookies omitted.
-- Stereo metadata verification before accepting a stream.
-- MP4 byte-range streaming through MediaSource, using `sidx` segment indices and a bounded playback buffer.
-- MP4 `st3d` / `sv3d` and WebM stereo / projection metadata discovery.
-- Raw and raw-deflate mesh projections, with one or two eye meshes.
-- Equirectangular projections with crop bounds, including 180° content.
-- Mono, left-right, right-left, top-bottom, and custom-mesh stereo layouts.
-- Static yaw, pitch, and roll metadata.
-- Eye preview, WebXR session lifecycle, select/pause, squeeze/recenter, and cleanup when the observed stream changes.
+Enable one installation at a time. A duplicate-load guard makes the first loaded copy supply the viewer.
 
-Loading stereo requests a separate VR representation even when the ordinary web player receives a monoscopic representation. Without loading stereo, automatic mode can also render the current web stream when its metadata is available.
+## Play a VR180 video
 
-Current limits:
+1. Open a YouTube watch page and start playback.
+2. Open **WebXR** at the lower right.
+3. Choose a stereo stream resolution and click **Load stereo stream**. Start with 1080p.
+4. Leave **Projection** on **Automatic**. **Eye preview** displays both eyes in the browser window.
+5. Stop the preview, click **Enter VR**, and allow the browser's VR permission prompt.
 
-- VR extraction uses an undocumented YouTube client API. Availability can vary by video, session, and future YouTube changes. A failed request is shown in the panel. The earlier `ANDROID_VR` approach fetched metadata and early segments but repeatedly returned HTTP 403 for later segments; renewing that URL did not solve the failure. The current `VISIONOS` path served those later segments successfully.
-- Stereo streaming currently selects MP4 representations with direct URLs and a flat `sidx` index. The API offers up to 7680 × 4320 for the reference video. Higher resolutions load, but the current Steam Frame Chromium build uses software video decoders and could not sustain 4K or 8K playback in the tests below.
-- The original YouTube video keeps running for audio and controls. The separate stereo video follows its clock, correcting drift above 150 ms. This uses two decoders and extra bandwidth; buffering can temporarily disrupt synchronization.
-- Metadata observation covers main-thread MediaSource playback. Worker-owned MediaSource, direct media URLs, or initialization data absent from the observed stream require another acquisition path.
-- The initialization capture is capped at 2 MiB. Mesh decompression is capped at 4 MiB.
-- Explicit cubemap projection boxes, camera-motion (`camm`) stabilization tracks, and spherical V1 XML are not implemented.
-- Protected or cross-origin video frames that the browser refuses to upload to WebGL produce a playback error.
-- Mesh CRC fields are not validated; structural sizes, indices, and allocation limits are checked.
-- Navigation releases the stereo stream and exits VR. For direct rendering of YouTube's original stream, a stream change also stops the viewer.
+YouTube controls audio, seeking, and playback speed. In VR, controller **select** pauses or resumes playback, and **squeeze** recenters horizontally. Use the headset's normal system action to exit VR. Controller actions still need full on-device validation.
 
-## Implementation
+The resolution selector sets a maximum. The loader can select a lower eligible stream; check the displayed decoded dimensions. Changing the selector requires clicking **Load stereo stream** again. Dimensions describe the complete frame containing both eyes.
 
-The extension runs one bundled script in YouTube's main JavaScript world at `document_start`. It observes `MediaSource.addSourceBuffer`, `SourceBuffer.appendBuffer`, and object-URL creation while forwarding the original calls. Parsed metadata is associated with the specific media source behind the selected video element.
+**Show diagnostics** reports dimensions, projection, stereo layout, synchronization drift, and WebXR support. It includes the video ID and format summaries, while omitting stream URLs, cookies, and tokens.
 
-The VR acquisition path reads an initialization range and segment index from the selected CDN URL. It appends requested segments into a separate MediaSource, fetching approximately eight seconds ahead and evicting distant buffered data. Explicit range requests are necessary for the tested URLs: assigning the raw URL directly to a video element returned HTTP 403.
+## Supported playback and limits
 
-The renderer uploads the selected decoded video element as a WebGL texture. It applies the metadata's eye-specific mesh and texture crop for each WebXR view. Headset translation is removed because the recorded image has a fixed camera origin; headset rotation controls the viewing direction.
+- Loads a separate stereo representation through YouTube's `VISIONOS` player API, using the page's visitor identifier with account cookies omitted.
+- Streams MP4 byte ranges through MediaSource using `sidx` segment indices and a bounded buffer.
+- Reads MP4 and WebM stereo/projection metadata from the original web player, plus MP4 metadata from the separate stereo stream.
+- Renders raw or deflated projection meshes, cropped equirectangular projections, eye-specific layouts, and static orientation metadata.
+- Uses headset rotation for viewing direction; recorded video has a fixed camera origin.
 
-All extension code is bundled locally. Stereo requests go directly from the YouTube page to YouTube and its Google Video CDN. There is no background service, external server, or download helper. IWER and Playwright are development dependencies and are excluded from the extension bundle.
+The separate stereo loader currently accepts **MP4 only**. A video's higher-resolution WebM/VP9 streams are skipped. For example, `38jcxsq8EBU` selects its 1920 × 1080 H.264 stream at both the 1080p and 2160p settings; its actual 4K stereo representation is WebM/VP9.
 
-## Development and validation
+YouTube's client API is undocumented and can change. Some videos or sessions may lack directly playable stereo streams. Failures appear in the WebXR panel. The browser must support the selected codec and permit video texture uploads.
+
+The original YouTube video keeps running for audio and controls. A separate muted stereo video follows its clock, correcting drift above 150 ms. This uses two decoders and extra bandwidth. Slow decoding or buffering can trigger repeated synchronization seeks.
+
+Metadata observation covers main-thread MediaSource playback. Initialization data missed before injection, worker-owned MediaSource, and other playback paths may require **Load stereo stream**. Explicit cubemap projections, camera-motion stabilization tracks, spherical V1 XML, and mesh CRC validation are not implemented. Metadata capture and mesh decompression have size limits.
+
+Manual VR180 layouts are available when you know the source packing. A monoscopic recording provides one captured eye view.
+
+## Steam Frame decoding
+
+Hardware decoding depends on the browser and operating-system driver. Related projects:
+
+- [Chromium WebXR for Steam Frame](https://github.com/mmis1000/chromium-webxr-steam-frame): WebXR and V4L2 decoding integration, including the empty capture-buffer fix.
+- [Steam Frame Iris AV1 driver PoC](https://github.com/mmis1000/steamframe-iris-av1-poc): experimental AV1 driver support and builds.
+
+With those fixes, testing on October 30–31, 2026 confirmed hardware AV1 playback and correct 4K VR stereo/tracking. Separate local-file tests sustained 4K60 and synthetic 8K30; the tested real 8K60 stream advanced at roughly half speed. These are device/build-specific measurements, not guarantees for every video or the two-video userscript path.
+
+The installed Violentmonkey userscript was tested with `38jcxsq8EBU` on October 31. Both resolution settings above played smoothly in native VR after restarting Chromium. Reported motion jumps around scene transitions were subsequently identified by the user as present in the source video; a local hardware-decoding test over 12–25 seconds recorded zero dropped frames.
+
+[Earlier investigation notes](docs/steam-frame-investigation.md) preserve the original software-decoding limits and the first V4L2 deployment. They describe historical builds and test profiles.
+
+## Build and test
+
+Use Node.js 22 and npm:
 
 ```sh
-npm install
+npm ci
 npm run build
 npm test
+```
+
+The unpacked extension is generated in `dist/`; the userscript is `dist/youtube-webxr.user.js`.
+
+Browser tests require FFmpeg on `PATH`. They default to installed Microsoft Edge. To use Playwright's Chromium, install it and set `BROWSER_CHANNEL=chromium` in your shell:
+
+```sh
+npx playwright install chromium
 npm run test:browser
-npm run test:youtube
+npm run test:userscript
 ```
 
-Browser tests currently use installed Microsoft Edge and `ffmpeg` on PATH. They generate a stereo color fixture, add spherical metadata to its fragmented MP4, and play it through a real MediaSource. Pixel checks verify left/right selection and vertical orientation. IWER checks the immersive session path. Screenshots and results are written to `test-output/`.
+Tests generate a stereo color fixture, play it through MediaSource, verify eye colors and orientation through WebGL pixels, exercise immersive sessions through IWER, and check navigation cleanup. They run each generated bundle in the page context. Real userscript-manager installation and native headset behavior are covered by the device checks described above.
 
-The separate `test:youtube` command accesses the reference video and checks stereo streaming, decoded dimensions, seeking beyond 90 seconds, pausing, emulated VR entry, and navigation cleanup. It uses a fresh browser profile. The latest fresh-profile run received stereo segments successfully, but YouTube's original player failed after seeking; the same failure reproduced without the extension. Because the original player supplies audio and the playback clock, that live test currently fails in that environment. Earlier short-playback integration tests passed. Unpacked Manifest V3 injection was also verified in Edge.
+`npm run test:youtube` is an optional live integration test. It depends on YouTube availability and is excluded from CI. The latest earlier fresh-profile run encountered an original-player failure after seeking that also reproduced without this project.
 
-### Steam Frame device test
+To package a local build, run `python scripts/package.py` after `npm run build`. It writes an extension ZIP, the userscript, and `SHA256SUMS.txt` to `release/`. Node modules, recordings, private stream URLs, and test outputs are excluded from the downloads.
 
-The extension is installed for testing at `/home/steamos/chromium-xr/extensions/youtube-webxr`, in a separate Chromium profile at `/home/steamos/.config/youtube-webxr-test`. The existing Chromium launcher and normal profile are preserved.
+## CI and releases
 
-The running test browser uses the user service `youtube-webxr-test` and a loopback debugging port of 9222. To reconnect from this workstation, keep this tunnel open in a separate terminal:
+GitHub Actions builds and tests pushes to `main`, pull requests, version tags, and manual runs. Successful runs upload `youtube-webxr-packages` and browser test evidence as workflow artifacts.
 
-```sh
-ssh -N -L 127.0.0.1:19222:127.0.0.1:9222 steamos@frame
-```
+To publish a release, update the version in `extension/manifest.json` and `package.json`/`package-lock.json`, commit, and push a matching `vVERSION` tag. Tag builds verify the manifest version, run the same tests, and publish both packages with checksums to GitHub Releases. The workflow's release job has repository write permission; tests run with read permission.
 
-Then run `npm run test:frame`. This reloads the reference video, seeks past 90 seconds, checks decoded stereo frames, enters native VR, and verifies that headset poses contain left and right views. Allow the browser's VR permission prompt if requested. It leaves the viewer open for visual inspection. `FRAME_CDP_URL` can override the debugging address.
+## Implementation references
 
-Device observations on 2026-10-26: native XR frames and both eye views were delivered. The final packaged build passed `test:frame` at 98.48 seconds with 25 tracked XR frames, both eye views, and zero dropped video frames out of 1,250. An earlier longer sample recorded 3 dropped frames out of 5,065 across playback and seeking, with about 68 ms of clock drift. The user confirmed correct stereo and head tracking. The runtime reported `visible-blurred` during automated monitoring, so performance measurements remain preliminary.
+- [Google VR180 specification](https://github.com/google/spatial-media/blob/master/docs/vr180.md)
+- [Spherical Video V2 metadata](https://github.com/google/spatial-media/blob/master/docs/spherical-video-v2-rfc.md)
+- [yt-dlp YouTube client configuration](https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/youtube/_base.py)
+- [WebXR Device API](https://www.w3.org/TR/webxr/)
 
-### Maximum-resolution test
-
-Further tests on 2026-10-26 used native immersive VR with runtime visibility `visible`, the same reference video, and its 60 fps stereo representations. Dimensions below describe the complete frame containing both eyes. Each run started near 30 seconds into the video; measurements include startup and synchronization recovery.
-
-| Actual decoded resolution | Codec | Sample | Presented video callbacks / second | Observed result |
-| --- | --- | --- | --- | --- |
-| 7680 × 4320 (8K) | AV1 | 20 seconds | 0 | Loaded the stream and entered VR, but presented no new video frames during the sample. |
-| 3840 × 2160 (4K) | AV1 | 30 seconds | 0.63 | Occasional frames, about 4.35 seconds behind the video clock at the end, despite roughly 10 seconds buffered ahead. |
-| 2560 × 1440 | AV1 | 30 seconds | 29.94 | Startup stalls followed by roughly 45–48 callbacks/second; 12.4% of reported video frames dropped over the full sample. |
-| 1920 × 1080 | H.264 | 30 seconds | 55.47 | Best measured result; 7.1% dropped frames, about 20 ms final presentation lag. Several five-second intervals reached about 60 callbacks/second. |
-
-These callback rates measure new video presentations, separately from the headset's XR animation rate. At 4K and 8K the video clock continued advancing through synchronization seeks while the picture stalled, so the dropped-frame counter alone understated the problem. The browser reported the software `Dav1dVideoDecoder` for AV1 and `kIsPlatformVideoDecoder: false`. Hardware decode integration and the player's synchronization behavior need investigation before claiming smooth higher-resolution playback on this setup.
-
-The first 2160p request fell back to 1440p; a subsequent run selected and tested actual 2160p. The player chooses the next eligible representation if a higher one cannot be opened. Check decoded dimensions rather than relying on the requested resolution alone.
-
-To repeat a measurement with the SSH tunnel open:
-
-```sh
-npm run test:resolution -- 4320
-npm run test:resolution -- 2160
-npm run test:resolution -- 1440
-npm run test:resolution -- 1080
-```
-
-This reloads the reference page, selects the requested maximum, enters native VR, and records actual dimensions, codec, decoder, buffering, presentation callbacks, and XR frames. The 1440p test adds a temporary selector option to that page. `FRAME_SAMPLE_SECONDS` changes the default 30-second sample. Reports are saved under `test-output/frame-HEIGHTp.json`; the initial 1440p fallback measurement is `frame-2160p-fallback.json`. The viewer was restored to 1080p after testing.
-
-### Decoder investigation
-
-The 2026-10-26 follow-up found a browser/driver integration gap and a separate synchronization problem:
-
-1. **The installed browser has no usable hardware decode backend for this device.** Chromium's `SystemInfo.getInfo` reports an empty `videoDecoding` list, even though its general `video_decode` feature status says enabled. Rendering uses Adreno 750 through Mesa/ANGLE/Zink. Symbol inspection of the installed, symbol-bearing Chromium binary found `VaapiVideoDecoder::Create`, but no V4L2 decoder implementation. Steam Frame exposes its Qualcomm Iris decoder through V4L2 at `/dev/video-dec0` (`/dev/video22`). The `steamos` account belongs to the video group and successfully queries that node. No VA-API driver library was found in the checked system driver directories. This evidence points to a build/backend mismatch rather than a device-node permission failure.
-2. **The installed kernel interface does not expose AV1 decoding.** `VIDIOC_ENUM_FMT` lists H.264, HEVC, and VP9 as compressed input formats; AV1 is absent. The supported formats advertise frame dimensions up to 8192 × 8192. Qualcomm's [Snapdragon 8 Gen 3 product brief](https://docs.qualcomm.com/bundle/publicresource/87-71408-1_REV_D_Snapdragon_8_gen_3_Mobile_Platform_Product_Brief.pdf) lists hardware H.265, VP9, and AV1 decoding, so the observed Linux interface exposes a subset of the silicon's documented capabilities. The reference video's 8K representation is AV1. Enabling a browser V4L2 backend would still leave that AV1 driver gap to resolve.
-3. **Repeated synchronization seeks amplify slow decoding.** `LinkedVideo` corrects drift above 150 ms every 100 ms. During the 4K experiment, suppressing those corrections in the test page allowed roughly 33.23 new video presentations per second over 20 seconds, compared with 0.63 in the earlier synchronized run. The experiment suppressed 208 seek requests and ended about 1.69 seconds behind the original video's audio clock, with 43.9% dropped video frames. This is evidence that frequent decoder resets worsen playback, and that simply disabling synchronization is insufficient. A follow-up synchronized run recorded 39 seek requests and only three video callbacks before a network failure ended that run; it is not a completed performance sample.
-
-These tests isolate concrete gaps without establishing full hardware-decoder throughput. A separate FFmpeg V4L2 H.264 probe opened Iris and produced one frame, then stalled and was terminated. Browser V4L2 integration therefore also needs an actual sustained decode and buffer-import test; advertised dimensions alone do not establish 8K60 performance.
-
-The next implementation work is to build Chromium with a working V4L2 stateful decode path and compatible output-buffer import, verify H.264/VP9 acceleration, and change synchronization so buffering does not repeatedly restart decoding. Chromium's [build configuration](https://chromium.googlesource.com/chromium/src/+/HEAD/media/gpu/args.gni) defaults `use_v4l2_codec` to false and configures VA-API separately. Its [Linux decoder features](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/media/base/media_switches.cc) control runtime selection of compiled backends. The extension currently selects MP4, so using this video's hardware-supported 4K VP9 representation also requires a WebM streaming path. Hardware AV1 requires a driver/API path that actually exposes it.
-
-Evidence is saved in `test-output/frame-gpu-info.json`, `frame-decoder-platform.txt`, `frame-2160p-without-sync-seeks.json`, and `frame-2160p-resolution-test.json`. The benchmark supports `FRAME_START_TIME` and `FRAME_SUPPRESS_SYNC_SEEKS=1` for temporary page-local experiments. Reloading removes the experimental setter override; production playback code and the installed browser were not modified by this investigation.
-
-To inspect a live YouTube page in a clean, headless Edge session:
-
-```sh
-node scripts/inspect-youtube.mjs "https://www.youtube.com/watch?v=VIDEO_ID"
-```
-
-That diagnostic uses a fresh browser profile. Its available formats and playback access may differ from your normal headset browser session.
-
-## Evidence behind the approach
-
-- [Google's VR180 specification](https://github.com/google/spatial-media/blob/master/docs/vr180.md) describes projection meshes and optional camera-motion metadata.
-- [Spherical Video V2](https://github.com/google/spatial-media/blob/master/docs/spherical-video-v2-rfc.md) defines the MP4/WebM projection and stereo metadata parsed here.
-- [yt-dlp's YouTube format processing](https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/youtube/_video.py) reads `projectionType` from stream responses.
-- [yt-dlp's client configuration](https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/youtube/_base.py) supplies the `VISIONOS` client identity used here. Direct device testing on 2026-10-26 confirmed stereo metadata and media beyond the first minute for the reference video.
-- [WebXR](https://www.w3.org/TR/webxr/) supplies per-eye views and immersive presentation.
+All runtime code is bundled locally. Requests go directly from the YouTube page to YouTube and its media CDN. There is no background service or download helper. Playwright and IWER are development dependencies.

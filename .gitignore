@@ -1,3 +1,6 @@
 node_modules/
 dist/
 test-output/
+release/
+# Driver development moved to mmis1000/steamframe-iris-av1-poc.
+scripts/steam-frame-av1-poc/

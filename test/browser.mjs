@@ -26,7 +26,9 @@ const media = inject(new Uint8Array(await readFile('test-output/eyes.mp4')));
 const emulation = await build({ stdin: { contents: `import { XRDevice, metaQuest3 } from 'iwer';
   window.testDevice = new XRDevice(metaQuest3, { stereoEnabled: true });
   window.testDevice.installRuntime({ forceInstall: true });`, resolveDir: process.cwd() }, bundle: true, write: false, format: 'iife' });
-const extension = await readFile('dist/youtube-xr.js', 'utf8');
+const userscript = process.argv.includes('--userscript');
+const extension = await readFile(userscript ? 'dist/youtube-webxr.user.js' : 'dist/youtube-xr.js', 'utf8');
+const artifactPrefix = userscript ? 'userscript-' : '';
 const fixture = `<!doctype html><html><head><title>WebXR stereo fixture</title></head>
   <body style="background:#202b3d;color:white;font:18px system-ui;padding:30px">
   <h1>VR180 stereo fixture</h1><p>Left eye: red above yellow. Right eye: blue above green.</p>
@@ -46,7 +48,7 @@ const server = createServer(async (req, res) => {
   } else { res.setHeader('Content-Type', 'text/html'); res.end(fixture); }
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-const browser = await chromium.launch({ channel: 'msedge', headless: true,
+const browser = await chromium.launch({ channel: process.env.BROWSER_CHANNEL || 'msedge', headless: true,
   args: ['--enable-unsafe-swiftshader', '--autoplay-policy=no-user-gesture-required'] });
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
@@ -57,7 +59,7 @@ try {
   await page.getByText('MP4: equirectangular, left-right stereo.', { exact: true }).waitFor();
   await page.getByRole('button', { name: 'Eye preview', exact: true }).click();
   await page.getByText('Eye preview: left eye on the left, right eye on the right.').waitFor();
-  await page.screenshot({ path: 'test-output/eye-preview.png' });
+  await page.screenshot({ path: `test-output/${artifactPrefix}eye-preview.png` });
   // Check actual video decoding, texture orientation and eye crops through WebGL pixels.
   const pixels = await page.evaluate(async () => {
     const { VideoRenderer, sphere } = await import('/src/render.js');
@@ -81,7 +83,7 @@ try {
   await page.getByRole('button', { name: 'Enter VR', exact: true }).click();
   await page.getByText('VR active. Select to pause or play; squeeze to recenter.').waitFor();
   assert.equal(await page.evaluate(() => !!window.testDevice.activeSession), true);
-  await page.screenshot({ path: 'test-output/xr-session.png' });
+  await page.screenshot({ path: `test-output/${artifactPrefix}xr-session.png` });
   await page.evaluate(() => document.dispatchEvent(new Event('yt-navigate-start')));
   await page.waitForFunction(() => !window.testDevice.activeSession);
   await page.waitForFunction(() => document.querySelector('#youtube-webxr').shadowRoot.querySelectorAll('canvas').length === 0);
@@ -90,6 +92,6 @@ try {
   assert.equal(report.webxr.immersiveVR, true);
   assert.equal(report.selectedMode, 'auto');
   assert.deepEqual(errors, []);
-  await writeFile('test-output/browser-result.json', JSON.stringify({ result: 'passed', pixels, diagnostics: report }, null, 2));
-  console.log('Browser checks passed: real MSE playback, metadata detection, eye colors/orientation, IWER immersive session, navigation cleanup.');
+  await writeFile(`test-output/${artifactPrefix}browser-result.json`, JSON.stringify({ result: 'passed', pixels, diagnostics: report }, null, 2));
+  console.log(`${userscript ? 'Userscript' : 'Extension'} bundle checks passed: real MSE playback, metadata detection, eye colors/orientation, IWER immersive session, navigation cleanup.`);
 } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }

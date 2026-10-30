@@ -1,0 +1,77 @@
+name: Build and test
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Install browser test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          npx playwright install --with-deps chromium
+      - name: Check release version
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node --input-type=module -e "import fs from 'node:fs'; const v=JSON.parse(fs.readFileSync('extension/manifest.json')).version; if(process.env.RELEASE_TAG!=='v'+v) throw new Error('Tag must match manifest version');"
+      - run: npm run build
+      - run: npm test
+      - name: Test extension bundle and userscript
+        env:
+          BROWSER_CHANNEL: chromium
+        run: |
+          npm run test:browser
+          npm run test:userscript
+      - name: Package downloads
+        run: python3 scripts/package.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: youtube-webxr-packages
+          path: release/
+          if-no-files-found: error
+      - name: Save browser test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-test-results
+          path: |
+            test-output/*browser-result.json
+            test-output/*eye-preview.png
+            test-output/*xr-session.png
+          if-no-files-found: ignore
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: youtube-webxr-packages
+          path: release
+      - name: Publish tested packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_TAG" release/* --verify-tag --title "YouTube WebXR VR180 $RELEASE_TAG" --generate-notes
