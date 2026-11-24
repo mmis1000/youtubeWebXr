@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "YouTube WebXR VR180 — prototype",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Play YouTube VR180 and 360-degree video in WebXR with controller turning and playback controls.",
   "minimum_chrome_version": "111",
   "content_scripts": [{

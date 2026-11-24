@@ -1,6 +1,27 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mediaURL, chooseFormats } from '../src/youtube.js';
+import { mediaURL, chooseFormats, suspendVideoTracks } from '../src/youtube.js';
+
+test('background video tracks suspend across replacements and restore on exit', () => {
+  const tracks = new EventTarget();
+  let entries = [{ selected: true }];
+  tracks[Symbol.iterator] = () => entries[Symbol.iterator]();
+  const restore = suspendVideoTracks({ videoTracks: tracks, audioTracks: [{ enabled: true }] });
+  assert.equal(entries[0].selected, false);
+  entries = [{ selected: true }];
+  tracks.dispatchEvent(new Event('addtrack'));
+  assert.equal(entries[0].selected, false);
+  entries[0].selected = true;
+  tracks.dispatchEvent(new Event('change'));
+  assert.equal(entries[0].selected, false);
+  restore();
+  assert.equal(entries[0].selected, true);
+  tracks.dispatchEvent(new Event('change'));
+  assert.equal(entries[0].selected, true);
+  suspendVideoTracks({})();
+  suspendVideoTracks({ videoTracks: tracks })();
+  assert.equal(entries[0].selected, true, 'video-only playback retains its clock');
+});
 test('VR format selection respects resolution, codec support and direct URLs', () => {
   const formats = [
     {itag:1,height:2160,mimeType:'video/webm; codecs="vp9"'},

@@ -126,6 +126,26 @@ export function resolveStereo(videoId, height, signal, onFormats) {
   return new StereoResolver().resolve(videoId, height, signal, onFormats);
 }
 
+export function suspendVideoTracks(video) {
+  const tracks = video.videoTracks;
+  if (!tracks || !Array.from(video.audioTracks || []).some(track => track.enabled)) return () => {};
+  let selected;
+  const suspend = () => {
+    for (const track of tracks) if (track.selected) {
+      selected = track;
+      track.selected = false;
+    }
+  };
+  tracks.addEventListener('addtrack', suspend);
+  tracks.addEventListener('change', suspend);
+  suspend();
+  return () => {
+    tracks.removeEventListener('addtrack', suspend);
+    tracks.removeEventListener('change', suspend);
+    if (selected && Array.from(tracks).includes(selected)) selected.selected = true;
+  };
+}
+
 export class LinkedVideo {
   constructor(original, result, onError, signal) {
     this.original = original; this.result = result; this.active = false; this.disposed = false;
@@ -154,6 +174,8 @@ export class LinkedVideo {
   }
   setActive(active) {
     this.active = active;
+    if (active && !this.restoreVideoTracks) this.restoreVideoTracks = suspendVideoTracks(this.original);
+    if (!active) { this.restoreVideoTracks?.(); this.restoreVideoTracks = null; }
     this.stream.setActive(active);
     if (active) { this.video.preload = 'auto'; this.sync(); }
     else { this.video.pause(); this.video.preload = 'metadata'; }
@@ -169,6 +191,7 @@ export class LinkedVideo {
     this.stream.dispose();
     for (const remove of this.listeners) remove();
     this.video.pause(); this.video.removeAttribute('src'); this.video.load(); this.video.remove();
+    this.restoreVideoTracks?.(); this.restoreVideoTracks = null;
   }
 }
 

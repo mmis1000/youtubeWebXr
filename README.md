@@ -63,13 +63,15 @@ YouTube's client API is undocumented and can change. Some videos or sessions may
 
 Validated source headers and indexes are cached within the active preview/VR session, so quality changes reuse discovery results. The cache expires within five minutes or before a signed stream URL expires. Exit, navigation, and playback/preparation errors clear it; Retry refreshes discovery.
 
-The original YouTube video keeps running for audio and controls. A separate muted VR video follows its clock, correcting drift above 150 ms. This uses two decoders and extra bandwidth. Slow decoding or buffering can trigger repeated synchronization seeks.
+The original YouTube player supplies audio and controls. A separate muted VR video follows its clock, correcting drift above 150 ms. Version 0.3.1 suspends the original player's video track while the separate stream is active, then restores it on exit. This requires the browser's AudioVideoTracks API and an enabled audio track. The Steam Frame launcher enables that API; other browsers retain the two-video behavior when it is unavailable. Network downloads still follow YouTube's player behavior. Slow decoding or buffering can trigger repeated synchronization seeks.
 
 Metadata observation covers main-thread MediaSource playback. When the original video has no usable spherical projection metadata, entry and preview request a separate VR stream. Explicit cubemap projections, camera-motion stabilization tracks, spherical V1 XML, and mesh CRC validation are not implemented. Metadata capture and mesh decompression have size limits.
 
 Manual VR180 layouts are available when you know the source packing. A monoscopic recording provides one captured eye view.
 
 ## Steam Frame decoding
+
+On November 25, 2026, SteamOS 0.5.10 preview and Chromium 157.0.8103.15 decoded the test video's 7680 × 4320 AV1 stream in hardware. The updated Chromium launcher selects Vulkan while keeping Skia and ANGLE devices separate. This avoids the CPU color conversion that caused roughly half-speed playback, and permits direct WebGL video-texture import. Offline native VR sustained 59.95 presented fps. The installed userscript's live YouTube test advanced at 1× speed with audio/video drift below 19 ms; it still dropped 362 of 2,418 video frames in the 40-second measurement. See the [8K validation record](docs/steam-frame-8k-validation.md) for the configuration and measured limits.
 
 Hardware decoding depends on the browser and operating-system driver. Related projects:
 

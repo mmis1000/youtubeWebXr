@@ -1,0 +1,64 @@
+{
+  "date": "2026-11-25",
+  "video": "https://www.youtube.com/watch?v=NIO-zSgWkgQ",
+  "chromium": "157.0.8103.15",
+  "steamOS": "0.5.10 preview",
+  "kernel": "7.2.0-g04c7e99cb73a",
+  "offline": {
+    "wallSeconds": 40.1685,
+    "mediaSeconds": 40.168409000000004,
+    "speed": 0.9999977345432367,
+    "presentedFps": 59.9474712772446,
+    "totalFrames": 2412,
+    "droppedFrames": 2,
+    "waiting": 0,
+    "seeking": 0
+  },
+  "live": {
+    "wallSeconds": 40.23979999999982,
+    "videoSeconds": 40.2254,
+    "speed": 0.9996421453386991,
+    "totalFrames": 2418,
+    "droppedFrames": 362,
+    "xrFps": 60.711037331199734,
+    "maxAbsDriftSeconds": 0.018848999999999894,
+    "backgroundFrames": 0
+  },
+  "diagnostics": {
+    "extensionVersion": "0.3.1",
+    "videoId": "NIO-zSgWkgQ",
+    "webxr": {
+      "available": true,
+      "immersiveVR": true
+    },
+    "video": {
+      "width": 1920,
+      "height": 1080,
+      "readyState": 4,
+      "mediaSourceObserved": true
+    },
+    "selectedMode": "auto",
+    "state": {
+      "busy": false,
+      "status": "Playing 4320p",
+      "error": "",
+      "actualResolution": 4320,
+      "availableResolutions": [
+        720,
+        1080,
+        1440,
+        2160,
+        4320
+      ]
+    },
+    "stereoStream": {
+      "itag": 571,
+      "width": 7680,
+      "height": 4320,
+      "stereoMode": 2,
+      "projection": "mesh",
+      "meshCount": 1,
+      "synchronizationDriftSeconds": -0.00004399999999549209
+    }
+  }
+}
