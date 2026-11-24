@@ -301,7 +301,13 @@ function install() {
       if (detailsOpen && event.target.closest?.('.ytp-settings-button') && ui.entryGroup.parentNode?.contains(event.target)) { detailsOpen = false; update(); }
     }, true);
     refresh();
-    navigator.xr?.isSessionSupported('immersive-vr').then(supported => { xrSupported = supported; update(); }).catch(() => {});
+    // The XR runtime can come up after the page loads (e.g. right after the browser starts),
+    // so re-check on device changes and keep polling while VR is reported unavailable.
+    const checkXR = () => navigator.xr?.isSessionSupported('immersive-vr')
+      .then(supported => { if (supported !== xrSupported) { xrSupported = supported; update(); } }).catch(() => {});
+    checkXR();
+    navigator.xr?.addEventListener('devicechange', checkXR);
+    setInterval(() => { if (!xrSupported) checkXR(); }, 2000);
     new MutationObserver(() => {
       if (!attachTimer) attachTimer = setTimeout(() => { attachTimer = 0; attach(); }, 100);
     }).observe(document.body, { childList: true, subtree: true });

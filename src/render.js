@@ -96,13 +96,33 @@ export class VideoRenderer {
       return { buffer, count: part.data.length / 5, mode: [gl.TRIANGLES, gl.TRIANGLE_STRIP, gl.TRIANGLE_FAN][part.mode] };
     }));
   }
+  // Track presented frames so each decoded frame is copied once, right after it is presented.
+  // Re-copying an older frame late in its life can race the hardware decoder reusing its buffer,
+  // which shows up as a green strip where the next frame is half written (seen on Steam Frame / V4L2).
+  watch(video) {
+    if (this.watched === video) return;
+    if (this.watched && this.frameCallback) this.watched.cancelVideoFrameCallback?.(this.frameCallback);
+    this.watched = video; this.frameCallback = null; this.presented = 0; this.uploaded = -1; this.lastCallback = 0;
+    if (!video?.requestVideoFrameCallback) return;
+    const tick = (now, metadata) => {
+      if (this.watched !== video) return;
+      this.presented = metadata.presentedFrames; this.lastCallback = performance.now();
+      this.frameCallback = video.requestVideoFrameCallback(tick);
+    };
+    this.frameCallback = video.requestVideoFrameCallback(tick);
+  }
   upload(video) {
     if (video.readyState < 2) return false;
+    this.watch(video);
+    // Fall back to copying every frame if frame callbacks stall while the video plays.
+    const callbacksLive = this.frameCallback && (video.paused || performance.now() - this.lastCallback < 250);
+    if (callbacksLive && this.uploaded === this.presented) return true;
     const gl = this.gl;
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.texture);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, video);
     const error = gl.getError();
     if (error !== gl.NO_ERROR) throw new Error(`The video frame could not be used as a WebGL texture (${error}).`);
+    this.uploaded = this.presented;
     return true;
   }
   clear(framebuffer = null) {
@@ -128,6 +148,7 @@ export class VideoRenderer {
     }
   }
   dispose() {
+    this.watch(null);
     const gl = this.gl;
     for (const buffer of this.buffers) gl.deleteBuffer(buffer);
     for (const shader of this.shaders) gl.deleteShader(shader);
