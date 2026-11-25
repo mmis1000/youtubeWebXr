@@ -22,9 +22,15 @@ function install() {
   let lastDiagnosticsAt = -Infinity, attachTimer = 0;
   try { const saved = Number(localStorage.getItem(STORAGE_KEY)); if (Number.isInteger(saved) && saved > 0 && saved <= 16384) targetQuality = Math.max(MIN_VR_HEIGHT, saved); } catch {}
   const id = () => new URL(location.href).searchParams.get('v');
-  const state = () => ({ title: document.getElementById('movie_player')?.getVideoData?.()?.title || document.title.replace(/ - YouTube$/, ''),
-    time: video?.currentTime || 0, duration: video?.duration || 0, paused: busy ? !intendedPlaying : video?.paused ?? true,
-    quality, qualities, requestedQuality, busy, error, status, layout: spec?.layout || 'VR' });
+  const activeVideo = () => (stereo?.unified ? stereo.video : video);
+  const state = () => {
+    const active = activeVideo();
+    return {
+      title: document.getElementById('movie_player')?.getVideoData?.()?.title || document.title.replace(/ - YouTube$/, ''),
+      time: active?.currentTime || 0, duration: active?.duration || 0, paused: busy ? !intendedPlaying : active?.paused ?? true,
+      quality, qualities, requestedQuality, busy, error, status, layout: spec?.layout || 'VR'
+    };
+  };
   const player = new Player(message => { status = message; update(); }, () => finish(), {
     state, action,
     error: e => { error = e.message; status = error; update(); }
@@ -36,10 +42,17 @@ function install() {
     targetQuality = quality;
     try { localStorage.setItem(STORAGE_KEY, String(quality)); } catch {}
   }
+  function syncBackToOriginal() {
+    if (stereo?.unified && !navigating && video?.isConnected && Number.isFinite(stereo.video.currentTime) && Number.isFinite(video.duration)) {
+      video.currentTime = Math.min(stereo.video.currentTime, Math.max(0, video.duration - 0.01));
+    }
+  }
   function finish(resume = true) {
     ++generation; ++entryGeneration;
     const restore = started ? intendedPlaying : restorePlaying;
-    const shouldRestore = busy || !!error;
+    const wasUnified = !!stereo?.unified;
+    const shouldRestore = busy || !!error || wasUnified;
+    syncBackToOriginal();
     loadController?.abort(); loadController = null;
     resolver.clear();
     stereo?.dispose(); stereo = null; spec = null;
@@ -54,7 +67,7 @@ function install() {
     if (controller !== loadController || token !== generation) return;
     resolver.clear();
     if (busy) { controller.abort(e); return; }
-    error = e.message || String(e); status = error; video?.pause(); player.setSource(null); update();
+    error = e.message || String(e); status = error; activeVideo()?.pause(); video?.pause(); player.setSource(null); update();
   }
   async function specification(metadata) {
     if (mode !== 'auto') return { meshes: [sphere()], stereoMode: { sbs: 2, tb: 1, mono: 0 }[mode], pose: [0,0,0],
@@ -69,6 +82,7 @@ function install() {
   async function prepare(height = targetQuality, preview = false) {
     if (!video) return;
     const token = ++generation, original = video;
+    syncBackToOriginal();
     loadController?.abort(); stereo?.dispose(); stereo = null; spec = null;
     player.setSource(null);
     const controller = loadController = new AbortController();
@@ -103,7 +117,10 @@ function install() {
       else player.setSource(displayed, spec);
       busy = false; started = true; status = preview && !player.session ? 'Eye preview: left eye on the left, right eye on the right.' : `Playing ${quality}p`;
       remember(); update();
-      if (intendedPlaying) { await original.play(); stereo?.sync(); }
+      if (intendedPlaying) {
+        if (stereo?.unified) await stereo.video.play();
+        else { await original.play(); stereo?.sync(); }
+      }
     } catch (e) {
       if (token !== generation) return;
       resolver.clear();
@@ -122,8 +139,9 @@ function install() {
     }
     if (player.session) { exit(); return; }
     const token = ++entryGeneration, preview = player.mode === 'preview';
-    restorePlaying = !video.paused;
-    intendedPlaying = preview ? !video.paused : true;
+    const current = activeVideo();
+    restorePlaying = !current.paused;
+    intendedPlaying = preview ? !current.paused : true;
     error = ''; status = 'Opening VR…';
     const entry = player.enter(); update();
     try {
@@ -145,22 +163,32 @@ function install() {
     prepare(targetQuality, true);
   }
   async function seek(time) {
-    if (!video || busy || error || !Number.isFinite(video.duration)) return;
+    const active = activeVideo();
+    if (!active || busy || error || !Number.isFinite(active.duration)) return;
     const token = generation, original = video;
     const controller = loadController;
-    const playing = !original.paused;
-    intendedPlaying = playing; busy = true; status = 'Seeking…'; original.pause(); update();
+    const playing = !active.paused;
+    intendedPlaying = playing; busy = true; status = 'Seeking…'; active.pause(); update();
     const seekController = new AbortController();
     const cancel = () => seekController.abort(controller?.signal.reason);
     controller?.signal.addEventListener('abort', cancel, { once: true });
     const timeout = setTimeout(() => seekController.abort(new Error('Seeking timed out. Try again.')), 30000);
     try {
-      original.currentTime = seekTarget(time, 0, original.duration);
-      if (stereo) { stereo.video.currentTime = Math.min(original.currentTime, stereo.video.duration - .01); stereo.stream.pump(); }
-      await Promise.all([waitForFrame(original, seekController.signal), ...(stereo ? [waitForFrame(stereo.video, seekController.signal)] : [])]);
-      if (token !== generation) return;
-      busy = false; status = `Playing ${quality}p`; update();
-      if (playing) { await original.play(); stereo?.sync(); }
+      if (stereo?.unified) {
+        stereo.video.currentTime = seekTarget(time, 0, stereo.video.duration);
+        stereo.stream.pump();
+        await waitForFrame(stereo.video, seekController.signal);
+        if (token !== generation) return;
+        busy = false; status = `Playing ${quality}p`; update();
+        if (playing) await stereo.video.play();
+      } else {
+        original.currentTime = seekTarget(time, 0, original.duration);
+        if (stereo) { stereo.video.currentTime = Math.min(original.currentTime, stereo.video.duration - .01); stereo.stream.pump(); }
+        await Promise.all([waitForFrame(original, seekController.signal), ...(stereo ? [waitForFrame(stereo.video, seekController.signal)] : [])]);
+        if (token !== generation) return;
+        busy = false; status = `Playing ${quality}p`; update();
+        if (playing) { await original.play(); stereo?.sync(); }
+      }
     } catch (e) {
       if (token === generation) { busy = false; error = e.message; status = error; update(); }
     } finally { clearTimeout(timeout); controller?.signal.removeEventListener('abort', cancel); }
@@ -169,16 +197,17 @@ function install() {
     if (name === 'exit') return exit();
     if (name === 'quality') {
       if (value === quality && !busy && !error) return;
-      if (player.session && qualities.includes(value)) { if (!busy && !error) intendedPlaying = !video.paused; prepare(value); }
+      if (player.session && qualities.includes(value)) { if (!busy && !error) intendedPlaying = !activeVideo().paused; prepare(value); }
       return;
     }
     if (name === 'retry') return prepare(requestedQuality, !player.session);
-    if (busy || error || !video) return;
+    const active = activeVideo();
+    if (busy || error || !active) return;
     if (name === 'toggle') {
-      intendedPlaying = video.paused;
-      if (intendedPlaying) video.play().catch(e => { error = e.message; status = error; update(); }); else video.pause();
+      intendedPlaying = active.paused;
+      if (intendedPlaying) active.play().catch(e => { error = e.message; status = error; update(); }); else active.pause();
     } else if (name === 'seek') seek(value);
-    else if (name === 'skip' || name === 'back' || name === 'forward') seek(seekTarget(video.currentTime, name === 'back' ? -10 : name === 'forward' ? 10 : value, video.duration));
+    else if (name === 'skip' || name === 'back' || name === 'forward') seek(seekTarget(active.currentTime, name === 'back' ? -10 : name === 'forward' ? 10 : value, active.duration));
     update();
   }
   function refresh() {
@@ -188,8 +217,8 @@ function install() {
       if (video) {
         const original = video;
         const changed = () => {
-          // Pauses made by the stereo stream's buffering hold are not the user's intent.
-          if (!busy && !error && !stereo?.holding) intendedPlaying = !original.paused;
+          // Pauses made by unified MSE mode or buffering hold are not the user's intent.
+          if (!busy && !error && !stereo?.holding && !stereo?.unified) intendedPlaying = !original.paused;
           update();
         };
         original.addEventListener('play', changed); original.addEventListener('pause', changed);
@@ -203,8 +232,9 @@ function install() {
       video: video ? { width: video.videoWidth, height: video.videoHeight, readyState: video.readyState, mediaSourceObserved: !!source } : null,
       selectedMode: mode, state: { busy, status, error, actualResolution: quality, availableResolutions: qualities },
       stereoStream: stereo ? { itag: stereo.result.format.itag, width: stereo.video.videoWidth, height: stereo.video.videoHeight,
+        playbackMode: stereo.unified ? 'unified-mse' : 'linked-video', hasAudio: !!stereo.stream.hasAudio,
         stereoMode: stereo.result.metadata.stereoMode, projection: stereo.result.metadata.projection.type, meshCount: spec?.meshes.length,
-        synchronizationDriftSeconds: stereo.video.currentTime - video.currentTime } : null }, null, 2);
+        synchronizationDriftSeconds: stereo.unified ? 0 : stereo.video.currentTime - video.currentTime } : null }, null, 2);
   }
   function update() {
     if (!ui) return;
@@ -290,7 +320,7 @@ function install() {
     for (const [value, text] of [['auto','Automatic'],['sbs','Manual — VR180 left-right'],['tb','Manual — VR180 top-bottom'],['mono','Manual — 180° monoscopic']]) {
       const option = make('option', text, select); option.value = value;
     }
-    select.addEventListener('change', () => { mode = select.value; if (player.mode) { intendedPlaying = !video.paused; prepare(targetQuality, player.mode === 'preview'); } });
+    select.addEventListener('change', () => { mode = select.value; if (player.mode) { intendedPlaying = !activeVideo().paused; prepare(targetQuality, player.mode === 'preview'); } });
     make('p', 'In VR: point and trigger to use controls. Trigger away from the panel to hide it; trigger again to show it. Right stick: turn 30°. Left stick: seek 10 seconds. Return the stick to center between steps. Squeeze to reset the view and recenter the panel.', details);
     const inspect = make('button', 'Show diagnostics', details);
     const report = make('textarea', '', details); report.readOnly = true; report.hidden = true; report.setAttribute('aria-label', 'Playback diagnostics');

@@ -63,7 +63,8 @@ Test clip: `NIO-zSgWkgQ`, `VISIONOS` format `571` (`av01.0.17M.08`, 7680 × 4320
 | Scenario | Wall Time | Media Time | Total Video Frames | Dropped Video Frames | Notes |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Offline local file in native WebXR** | 40.17 s | 40.17 s | 2,412 | **2 (0.08%)** | 59.95 presented fps, ~72 XR callbacks/s; confirms hardware + Vulkan path can sustain 8K60 AV1 |
-| **Live YouTube in v0.3.1 prototype** | 40.24 s | 40.23 s | 2,418 | **362 (15.0%)** | ~60.7 XR callbacks/s, 18.85 ms max sampled drift; live streaming/upload path still drops frames |
+| **Live YouTube in v0.3.1 prototype** | 40.24 s | 40.23 s | 2,418 | **362 (15.0%)** | ~60.7 XR callbacks/s, 18.85 ms max sampled drift; dual-`<video>` + 400 ms single-segment poll + `UNPACK_FLIP_Y_WEBGL` |
+| **Live YouTube in Phase 1 (`unified-mse`)** | 20.01 s | 20.01 s | 1,200 | **6 (0.50%)** | 59.63 presented fps, 103.01 XR callbacks/s (`visible-blurred` SSH run), 0 ms drift, 15.95 s buffered ahead, `origPaused: true` (0 background frames), `V4L2VideoDecoder` + `OpusAudioDecoder` |
 
 ## Open Platform / Runtime Issues
 

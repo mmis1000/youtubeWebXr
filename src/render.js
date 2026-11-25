@@ -57,7 +57,8 @@ function modelMatrix(pose, heading) {
 export class VideoRenderer {
   constructor(canvas, spec) {
     this.canvas = canvas; this.spec = spec; this.heading = 0; this.heldFrames = [];
-    const gl = this.gl = canvas.getContext('webgl', { alpha: false, antialias: false });
+    const attrs = { alpha: false, antialias: false, xrCompatible: true };
+    const gl = this.gl = canvas.getContext('webgl2', attrs) || canvas.getContext('webgl', attrs);
     if (!gl) throw new Error('WebGL is unavailable.');
     this.buffers = []; this.shaders = [];
     try {
@@ -71,7 +72,7 @@ export class VideoRenderer {
         attribute vec3 position; attribute vec2 uv;
         uniform mat4 projection, view, model; uniform vec4 crop;
         varying vec2 videoUV;
-        void main() { videoUV = uv * crop.xy + crop.zw;
+        void main() { vec2 c = uv * crop.xy + crop.zw; videoUV = vec2(c.x, 1.0 - c.y);
           gl_Position = projection * view * model * vec4(normalize(position), 1.0); }`));
       gl.attachShader(program, shader(gl.FRAGMENT_SHADER, `
         precision mediump float; uniform sampler2D video; varying vec2 videoUV;
@@ -86,7 +87,6 @@ export class VideoRenderer {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
       gl.disable(gl.CULL_FACE); gl.disable(gl.DEPTH_TEST);
     } catch (error) { this.dispose(); throw error; }
   }
@@ -133,6 +133,9 @@ export class VideoRenderer {
     if (callbacksLive && this.uploaded === this.presented) return true;
     const gl = this.gl;
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.texture);
+    // Avoid UNPACK_FLIP_Y_WEBGL (Y is flipped in the vertex shader) and upload RGBA so ANGLE/Vulkan
+    // can take the zero-copy video import path instead of an intermediate 8K GPU blit.
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     // Upload through a WebCodecs VideoFrame and keep the last few open: an open VideoFrame holds the
     // decoded buffer, so the hardware decoder cannot reuse it while the GPU copy may still read it.
     // On Steam Frame (V4L2 Iris + WebGL) the buffer is otherwise recycled too early and the next frame
@@ -141,7 +144,7 @@ export class VideoRenderer {
     if (typeof VideoFrame === 'function') {
       try { source = new VideoFrame(video); } catch { source = video; }
     }
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, source);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
     if (source !== video) {
       this.heldFrames.push(source);
       while (this.heldFrames.length > HELD_FRAMES) this.heldFrames.shift().close();
@@ -222,7 +225,10 @@ export class Player {
       const renderer = this.renderer;
       await renderer.gl.makeXRCompatible();
       if (request !== this.request) return false;
-      const layer = new XRWebGLLayer(session, renderer.gl, { alpha: false, antialias: false });
+      const rawScale = typeof XRWebGLLayer.getNativeFramebufferScaleFactor === 'function'
+        ? XRWebGLLayer.getNativeFramebufferScaleFactor(session) : 1;
+      const framebufferScaleFactor = Number.isFinite(rawScale) && rawScale > 0 ? rawScale : 1;
+      const layer = new XRWebGLLayer(session, renderer.gl, { alpha: false, antialias: false, framebufferScaleFactor });
       session.updateRenderState({ baseLayer: layer, depthNear: .01, depthFar: 20 });
       const space = await session.requestReferenceSpace('local');
       if (request !== this.request) return false;

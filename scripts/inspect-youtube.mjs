@@ -14,7 +14,7 @@ try {
   await page.waitForSelector('video', { state: 'attached', timeout: 20000 });
   await page.evaluate(() => { const v = document.querySelector('video'); v.muted = true; v.play().catch(() => {}); });
   try { await page.waitForFunction(() => document.querySelector('video')?.videoWidth > 0, null, { timeout: 20000 }); } catch {}
-  await page.getByRole('button', { name: 'WebXR', exact: true }).click();
+  await page.getByRole('button', { name: 'VR details', exact: true }).click();
   await page.getByRole('button', { name: 'Show diagnostics', exact: true }).click();
   const report = JSON.parse(await page.getByRole('textbox', { name: 'Playback diagnostics' }).inputValue());
   report.pageTitle = await page.title();

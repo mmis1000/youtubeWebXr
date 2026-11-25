@@ -1,6 +1,7 @@
 import { boxes } from './metadata.js';
 import { fetchMedia } from './media.js';
 import { readWebMIndex } from './webm.js';
+import { OWN_MEDIA_SOURCE } from './observe.js';
 
 export function readIndex(bytes, absoluteOffset) {
   const box = boxes(bytes).find(x => x.type === 'sidx');
@@ -52,7 +53,9 @@ export async function loadIndex(format, initBytes, signal) {
   if (!format.indexRange) throw new Error('This stereo format has no byte-range index.');
   const start = Number(format.indexRange.start), end = Number(format.indexRange.end);
   const bytes = await fetchRange(format.url, start, end, signal);
-  return format.mimeType.startsWith('video/webm') ? readWebMIndex(bytes, initBytes, format) : readIndex(bytes, start);
+  const isWebM = /^(video|audio)\/webm(;|$)/.test(format.mimeType);
+  const trackType = format.mimeType.startsWith('audio/') ? 2 : 1;
+  return isWebM ? readWebMIndex(bytes, initBytes, format, trackType) : readIndex(bytes, start);
 }
 
 function event(target, name, signal) {
@@ -65,64 +68,249 @@ function event(target, name, signal) {
   });
 }
 
+export class TrackFeeder {
+  constructor(media, buffer, format, segments, targetTime, onError, signal, options = {}) {
+    this.media = media; this.buffer = buffer; this.format = format; this.segments = segments;
+    this.targetTime = targetTime; this.onError = onError; this.signal = signal;
+    this.fetchSegment = options.fetchSegment || ((seg, sig) => fetchRange(this.format.url, seg.start, seg.end, sig));
+    this.targetAhead = options.targetAhead ?? 18;
+    this.maxPrefetch = options.maxPrefetch ?? 2;
+    this.active = false; this.busy = false;
+    this.prefetchMap = new Map(); // index -> { controller, promise }
+  }
+  bufferedUntil(target) {
+    const ranges = this.buffer.buffered;
+    let until = target;
+    for (let i = 0; i < ranges.length; i++) {
+      if (target >= ranges.start(i) - 0.1 && target < ranges.end(i)) { until = ranges.end(i); break; }
+    }
+    return until;
+  }
+  nextIndex(until) {
+    return this.segments.findIndex(s => s.time + s.duration > until + 0.03);
+  }
+  startPrefetch(fromIndex, target) {
+    if (fromIndex < 0) return;
+    const keepEnd = Math.min(this.segments.length - 1, fromIndex + this.maxPrefetch);
+    this.abortOutside(fromIndex, keepEnd);
+    for (let i = fromIndex; i < this.segments.length && i < fromIndex + this.maxPrefetch; i++) {
+      const seg = this.segments[i];
+      if (i > fromIndex && seg.time >= target + this.targetAhead) break;
+      if (this.prefetchMap.has(i)) continue;
+      const controller = new AbortController();
+      const onParentAbort = () => controller.abort(this.signal.reason);
+      this.signal.addEventListener('abort', onParentAbort, { once: true });
+      const promise = this.fetchSegment(seg, controller.signal).finally(() => {
+        this.signal.removeEventListener('abort', onParentAbort);
+      });
+      // Prevent unhandled rejections if this prefetch is later aborted or dropped before being awaited.
+      promise.catch(() => {});
+      this.prefetchMap.set(i, { controller, promise });
+    }
+  }
+  abortOutside(minIndex, maxIndex) {
+    for (const [idx, entry] of this.prefetchMap) {
+      if (idx < minIndex || idx > maxIndex) {
+        entry.controller.abort();
+        this.prefetchMap.delete(idx);
+      }
+    }
+  }
+  clearPrefetch() {
+    for (const entry of this.prefetchMap.values()) entry.controller.abort();
+    this.prefetchMap.clear();
+  }
+  async append(bytes) {
+    const done = event(this.buffer, 'updateend', this.signal);
+    this.buffer.appendBuffer(bytes);
+    await done;
+  }
+  async remove(start, end) {
+    if (end <= start) return;
+    const done = event(this.buffer, 'updateend', this.signal);
+    this.buffer.remove(start, end);
+    await done;
+  }
+  async pump() {
+    if (!this.active || this.busy || this.signal.aborted || !this.buffer || this.media.readyState !== 'open') return;
+    this.busy = true;
+    let shouldContinue = false;
+    try {
+      const target = this.targetTime();
+      const ranges = this.buffer.buffered;
+      if (ranges.length && ranges.start(0) < target - 20) {
+        await this.remove(0, target - 12);
+        shouldContinue = true;
+        return;
+      }
+      if (ranges.length && ranges.end(ranges.length - 1) > target + 45) {
+        await this.remove(target + 30, this.media.duration);
+        shouldContinue = true;
+        return;
+      }
+      const until = this.bufferedUntil(target);
+      if (until < target + this.targetAhead) {
+        const idx = this.nextIndex(until);
+        if (idx >= 0) {
+          this.startPrefetch(idx, target);
+          const entry = this.prefetchMap.get(idx);
+          const bytes = await entry.promise;
+          this.prefetchMap.delete(idx);
+          if (this.signal.aborted || !this.active || this.media.readyState !== 'open') return;
+          const nowTarget = this.targetTime();
+          const seg = this.segments[idx];
+          // If the playhead jumped away while fetching, skip appending the stale segment and re-pump.
+          if (seg.time + seg.duration < nowTarget - 1 || seg.time > nowTarget + this.targetAhead + 5) {
+            shouldContinue = true;
+            return;
+          }
+          try {
+            await this.append(bytes);
+          } catch (err) {
+            if (err?.name !== 'QuotaExceededError') throw err;
+            if (this.buffer.buffered.length) {
+              await this.remove(0, Math.max(0, nowTarget - 4));
+              if (this.buffer.buffered.length && this.buffer.buffered.end(this.buffer.buffered.length - 1) > nowTarget + 16) {
+                await this.remove(nowTarget + 12, this.media.duration);
+              }
+            }
+            await this.append(bytes);
+          }
+          const afterUntil = this.bufferedUntil(this.targetTime());
+          if (afterUntil < this.targetTime() + this.targetAhead && this.nextIndex(afterUntil) >= 0) {
+            this.startPrefetch(this.nextIndex(afterUntil), this.targetTime());
+            shouldContinue = true;
+          }
+        }
+      }
+    } catch (error) {
+      if (!this.signal.aborted && error?.name !== 'AbortError') {
+        this.active = false;
+        this.onError(error);
+      }
+    } finally {
+      this.busy = false;
+      if (shouldContinue && this.active && !this.signal.aborted) {
+        queueMicrotask(() => this.pump());
+      }
+    }
+  }
+  setActive(value) {
+    this.active = value;
+    if (value) this.pump();
+    else this.clearPrefetch();
+  }
+  onSeek() {
+    this.clearPrefetch();
+    if (this.active) this.pump();
+  }
+}
+
 export class RangeStream {
   constructor(video, result, targetTime, onError, signal) {
     this.video = video; this.result = result; this.targetTime = targetTime; this.onError = onError;
-    this.controller = new AbortController(); this.active = false; this.busy = false;
+    this.controller = new AbortController(); this.active = false; this.hasAudio = false;
+    this.feeders = []; this.listeners = [];
     this.parentSignal = signal; this.abortFromParent = () => this.dispose();
     signal?.addEventListener('abort', this.abortFromParent, { once: true });
     if (signal?.aborted) this.controller.abort(signal.reason);
     this.ready = this.initialize();
   }
   async initialize() {
-    const { format, initBytes } = this.result, signal = this.controller.signal;
+    const { format, initBytes, audio } = this.result, signal = this.controller.signal;
     if (!MediaSource.isTypeSupported(format.mimeType)) throw new Error('This browser cannot decode the selected stereo format.');
     this.segments = this.result.segments || await loadIndex(format, initBytes, signal);
+    let audioSegments = null;
+    if (audio?.format && audio.initBytes && MediaSource.isTypeSupported(audio.format.mimeType)) {
+      try {
+        audioSegments = audio.segments || await loadIndex(audio.format, audio.initBytes, signal);
+      } catch (err) {
+        if (signal.aborted) throw err;
+        audioSegments = null;
+      }
+    }
+    signal.throwIfAborted();
+
     const media = this.media = new MediaSource();
+    media[OWN_MEDIA_SOURCE] = true;
     this.objectURL = URL.createObjectURL(media);
     const opened = event(media, 'sourceopen', signal);
     this.video.src = this.objectURL; await opened;
     signal.throwIfAborted();
+
+    // Create all SourceBuffers before appending any initialization segment; Chromium rejects
+    // addSourceBuffer() with QuotaExceededError once another SourceBuffer has initialized.
     this.buffer = media.addSourceBuffer(format.mimeType);
-    await this.append(initBytes);
-    const last = this.segments.at(-1); media.duration = last.time + last.duration;
-    this.video.currentTime = Math.min(this.targetTime(), media.duration - 0.01);
-    this.timer = setInterval(() => this.pump(), 400);
-    this.pump();
-  }
-  async append(bytes) {
-    const done = event(this.buffer, 'updateend', this.controller.signal);
-    this.buffer.appendBuffer(bytes); await done;
-  }
-  async pump() {
-    if (!this.active || this.busy || this.controller.signal.aborted || !this.buffer || this.media.readyState !== 'open') return;
-    this.busy = true;
-    try {
-      const target = this.targetTime(); let until = target;
-      const ranges = this.buffer.buffered;
-      for (let i = 0; i < ranges.length; i++) if (target >= ranges.start(i) - 0.05 && target < ranges.end(i)) until = ranges.end(i);
-      if (until < target + 8) {
-        const segment = this.segments.find(s => s.time + s.duration > until + 0.03);
-        if (segment) {
-          const bytes = await fetchRange(this.result.format.url, segment.start, segment.end, this.controller.signal);
-          await this.append(bytes);
+    let audioBuffer = null;
+    if (audioSegments) {
+      try {
+        audioBuffer = media.addSourceBuffer(audio.format.mimeType);
+      } catch {
+        audioBuffer = null;
+      }
+    }
+
+    const initAppends = [
+      (async () => {
+        const done = event(this.buffer, 'updateend', signal);
+        this.buffer.appendBuffer(initBytes);
+        await done;
+      })()
+    ];
+    if (audioBuffer) {
+      initAppends.push((async () => {
+        try {
+          const audioDone = event(audioBuffer, 'updateend', signal);
+          audioBuffer.appendBuffer(audio.initBytes);
+          await audioDone;
+        } catch (err) {
+          if (signal.aborted) throw err;
+          try { media.removeSourceBuffer(audioBuffer); } catch {}
+          audioBuffer = null;
         }
-      }
-      if (ranges.length && ranges.start(0) < target - 25) {
-        const done = event(this.buffer, 'updateend', this.controller.signal);
-        this.buffer.remove(0, target - 15); await done;
-      }
-      if (this.buffer.buffered.length && this.buffer.buffered.end(this.buffer.buffered.length - 1) > target + 45) {
-        const done = event(this.buffer, 'updateend', this.controller.signal);
-        this.buffer.remove(target + 30, this.media.duration); await done;
-      }
-    } catch (error) {
-      if (!this.controller.signal.aborted) { this.active = false; this.onError(error); }
-    } finally { this.busy = false; }
+      })());
+    }
+    await Promise.all(initAppends);
+    signal.throwIfAborted();
+
+    let duration = this.segments.at(-1).time + this.segments.at(-1).duration;
+    const videoFeeder = new TrackFeeder(media, this.buffer, format, this.segments, this.targetTime, this.onError, signal);
+    this.feeders.push(videoFeeder);
+
+    if (audioBuffer && audioSegments) {
+      this.audioBuffer = audioBuffer;
+      this.hasAudio = true;
+      duration = Math.max(duration, audioSegments.at(-1).time + audioSegments.at(-1).duration);
+      this.feeders.push(new TrackFeeder(media, audioBuffer, audio.format, audioSegments, this.targetTime, this.onError, signal));
+    }
+
+    media.duration = duration;
+    this.video.currentTime = Math.min(this.targetTime(), media.duration - 0.01);
+    const onPump = () => this.pump();
+    const onSeek = () => { for (const f of this.feeders) f.onSeek(); };
+    for (const type of ['timeupdate', 'waiting']) {
+      this.video.addEventListener(type, onPump);
+      this.listeners.push(() => this.video.removeEventListener(type, onPump));
+    }
+    this.video.addEventListener('seeking', onSeek);
+    this.listeners.push(() => this.video.removeEventListener('seeking', onSeek));
+    this.timer = setInterval(onPump, 1000);
+    if (this.active) {
+      for (const f of this.feeders) f.setActive(true);
+    }
   }
-  setActive(value) { this.active = value; if (value) this.pump(); }
+  pump() {
+    for (const f of this.feeders) f.pump();
+  }
+  setActive(value) {
+    this.active = value;
+    for (const f of this.feeders) f.setActive(value);
+  }
   dispose() {
     this.controller.abort(); clearInterval(this.timer);
+    for (const f of this.feeders) f.clearPrefetch();
+    for (const remove of this.listeners) remove();
+    this.listeners = [];
     this.parentSignal?.removeEventListener('abort', this.abortFromParent);
     if (this.objectURL) URL.revokeObjectURL(this.objectURL);
   }

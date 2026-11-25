@@ -8,7 +8,7 @@ function uint(bytes, element) {
   return value;
 }
 
-export function readWebMIndex(bytes, initBytes, format) {
+export function readWebMIndex(bytes, initBytes, format, trackType = 1) {
   const segment = elements(initBytes).find(e => e.id === 0x18538067);
   if (!segment) throw new Error('The WebM stream has no segment header.');
   const children = elements(initBytes, segment.body, segment.end);
@@ -26,10 +26,10 @@ export function readWebMIndex(bytes, initBytes, format) {
   }
   const contentLength = Number(format.contentLength);
   if (!(scale > 0) || !Number.isFinite(duration) || duration <= 0 || !Number.isSafeInteger(contentLength) || contentLength <= 0) throw new Error('Invalid WebM timing or file size.');
-  const videoTracks = elements(initBytes, tracks.body, tracks.end).filter(e => e.id === 0xae).map(e => elements(initBytes, e.body, e.end))
-    .filter(items => uint(initBytes, items.find(e => e.id === 0x83)) === 1);
-  if (videoTracks.length !== 1) throw new Error('Expected one WebM video track.');
-  const track = uint(initBytes, videoTracks[0].find(e => e.id === 0xd7));
+  const matchingTracks = elements(initBytes, tracks.body, tracks.end).filter(e => e.id === 0xae).map(e => elements(initBytes, e.body, e.end))
+    .filter(items => uint(initBytes, items.find(e => e.id === 0x83)) === trackType);
+  if (matchingTracks.length !== 1) throw new Error(`Expected one WebM ${trackType === 2 ? 'audio' : 'video'} track.`);
+  const track = uint(initBytes, matchingTracks[0].find(e => e.id === 0xd7));
   const cues = elements(bytes).find(e => e.id === 0x1c53bb6b);
   if (!cues) throw new Error('The WebM stream has no cue index.');
   const points = elements(bytes, cues.body, cues.end).filter(e => e.id === 0xbb).map(point => {
@@ -40,7 +40,7 @@ export function readWebMIndex(bytes, initBytes, format) {
     return { time: uint(bytes, items.find(e => e.id === 0xb3)) * scale,
       start: segment.body + uint(bytes, position.find(e => e.id === 0xf1)) };
   }).filter(Boolean);
-  if (!points.length) throw new Error('The WebM index has no video cues.');
+  if (!points.length) throw new Error(`The WebM index has no ${trackType === 2 ? 'audio' : 'video'} cues.`);
   const indexStart = Number(format.indexRange.start);
   // Cues may precede all clusters (YouTube) or follow them (ordinary WebM files).
   const mediaEnd = indexStart > points.at(-1).start ? indexStart : contentLength;

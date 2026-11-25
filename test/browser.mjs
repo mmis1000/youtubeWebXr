@@ -226,6 +226,7 @@ try {
     return v?.videoHeight===h && !v.seeking && document.querySelector('#youtube-webxr').shadowRoot.querySelector('select').value===String(h);
   },height);
   await ready(720);
+  await ux.waitForFunction(() => document.querySelector('#youtube-webxr').shadowRoot.querySelectorAll('[aria-label="VR source resolution"] option').length === 3);
   const initialPlayerRequests = playerRequests, initialHeaderRequests = headerRequests;
   assert.deepEqual(await ux.getByLabel('VR source resolution').locator('option').evaluateAll(options=>options.map(o=>o.value)),['720','1080','1440'],'only validated VR sources appear');
   assert.equal(await ux.evaluate(()=>localStorage.getItem('youtube-webxr:last-resolution')),'720');
@@ -377,7 +378,48 @@ try {
   await unsupported.getByText('Immersive VR is unavailable in this browser. Eye preview is available below.',{exact:true}).waitFor();
   assert.equal(await unsupported.getByRole('button',{name:'Enter VR',exact:true}).isDisabled(),true);
   await unsupported.close();
-  console.log(`${userscript ? 'Userscript' : 'Extension'} bundle checks passed: real MSE playback, metadata detection, eye colors/orientation, IWER immersive session, navigation cleanup.`);
+  // Verify unified single-video MSE playback (video + AAC audio SourceBuffers) activates and pauses original.
+  execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=30',
+    '-c:a', 'aac', '-b:a', '128k', '-movflags', 'empty_moov+frag_keyframe+default_base_moof+global_sidx', 'test-output/indexed-audio.mp4']);
+  const audioBytes = new Uint8Array(await readFile('test-output/indexed-audio.mp4'));
+  const audioIndex = boxes(audioBytes).find(b => b.type === 'sidx');
+  assert.ok(audioIndex, 'audio fixture has a global segment index');
+  const audioFormat = { itag: 140, mimeType: 'audio/mp4; codecs="mp4a.40.2"', bitrate: 128000,
+    audioTrack: { audioIsDefault: true }, url: 'https://fixture.googlevideo.com/audio',
+    initRange: { start: '0', end: String(audioIndex.start - 1) },
+    indexRange: { start: String(audioIndex.start), end: String(audioIndex.end - 1) } };
+  const unifiedPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  const unifiedErrors = [];
+  unifiedPage.on('pageerror', e => unifiedErrors.push(e.message));
+  await unifiedPage.addInitScript({ content: `${emulation.outputFiles[0].text}\nwindow.ytcfg={get:()=>'fixture-visitor'};\n${extension}` });
+  await unifiedPage.route('**/youtubei/v1/player?*', route => route.fulfill({ json: { playabilityStatus: { status: 'OK' },
+    streamingData: { adaptiveFormats: [stereoFixtures.get(720).format, audioFormat] } } }));
+  await unifiedPage.route('https://fixture.googlevideo.com/**', route => {
+    const url = new URL(route.request().url());
+    const bytes = url.pathname === '/audio' ? audioBytes : stereoFixtures.get(720).bytes;
+    const [start, end] = url.searchParams.get('range').split('-').map(Number);
+    return route.fulfill({ status: 200, headers: { 'Access-Control-Allow-Origin': '*' },
+      contentType: url.pathname === '/audio' ? 'audio/mp4' : 'video/mp4', body: Buffer.from(bytes.subarray(start, end + 1)) });
+  });
+  await unifiedPage.goto(`http://127.0.0.1:${server.address().port}/watch?v=unifiedtest`);
+  await unifiedPage.waitForFunction(() => document.querySelector('video').readyState >= 2);
+  await unifiedPage.getByRole('button', { name: 'Enter VR', exact: true }).click();
+  await unifiedPage.waitForFunction(() => {
+    const v = document.querySelector('video[data-youtube-webxr-stereo]');
+    return v && v.readyState >= 3 && !v.paused && v.currentTime > 0.3;
+  }, null, { timeout: 20000 });
+  assert.equal(await unifiedPage.evaluate(() => document.querySelector('video.html5-main-video').paused), true, 'unified MSE mode pauses background YouTube video');
+  await unifiedPage.getByRole('button', { name: 'VR details', exact: true }).evaluate(b => b.click());
+  await unifiedPage.getByRole('button', { name: 'Show diagnostics', exact: true }).evaluate(b => b.click());
+  const unifiedDiag = JSON.parse(await unifiedPage.getByRole('textbox', { name: 'Playback diagnostics' }).inputValue());
+  assert.equal(unifiedDiag.stereoStream.playbackMode, 'unified-mse');
+  assert.equal(unifiedDiag.stereoStream.hasAudio, true);
+  assert.equal(unifiedDiag.stereoStream.synchronizationDriftSeconds, 0);
+  await unifiedPage.getByRole('button', { name: 'Exit VR', exact: true }).evaluate(b => b.click());
+  await unifiedPage.waitForFunction(() => !document.querySelector('video[data-youtube-webxr-stereo]'));
+  assert.deepEqual(unifiedErrors, []);
+  await unifiedPage.close();
+  console.log(`${userscript ? 'Userscript' : 'Extension'} bundle checks passed: real MSE playback, unified audio+video MSE, metadata detection, eye colors/orientation, IWER immersive session, navigation cleanup.`);
 } catch (error) {
   const p = browser.contexts().at(-1)?.pages()[0];
   if (p) {

@@ -1,11 +1,13 @@
 import { InitCollector, isInitStart } from './metadata.js';
 
+export const OWN_MEDIA_SOURCE = Symbol('youtube-webxr-own-media-source');
+
 export function observeMedia(onChange) {
   const sources = new WeakMap(), buffers = new WeakMap(), urls = new Map();
   const create = URL.createObjectURL;
   URL.createObjectURL = function (object) {
     const url = Reflect.apply(create, this, arguments);
-    if (object instanceof MediaSource) {
+    if (object instanceof MediaSource && !object[OWN_MEDIA_SOURCE]) {
       if (!sources.has(object)) sources.set(object, { metadata: null, error: null, revision: 0 });
       urls.set(url, sources.get(object));
     }
@@ -20,7 +22,7 @@ export function observeMedia(onChange) {
   const add = MediaSource.prototype.addSourceBuffer;
   MediaSource.prototype.addSourceBuffer = function (mime) {
     const buffer = Reflect.apply(add, this, arguments);
-    if (/^video\//i.test(mime)) {
+    if (!this[OWN_MEDIA_SOURCE] && /^video\//i.test(mime)) {
       if (!sources.has(this)) sources.set(this, { metadata: null, error: null, revision: 0 });
       buffers.set(buffer, { source: sources.get(this), collector: new InitCollector() });
     }
