@@ -33,6 +33,10 @@ export function layoutLabel(metadata) {
   return `${layout} ${Math.round((1 - left - right) * 360)}°`;
 }
 
+// Decoded frames kept open after upload (see VideoRenderer.upload). The decoder has few buffers
+// (Iris AV1: 8 references + 2), so holding more than the latest frame stalls playback.
+const HELD_FRAMES = 1;
+
 const identity = () => new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 const multiply = (a, b) => {
   const out = new Float32Array(16);
@@ -52,7 +56,7 @@ function modelMatrix(pose, heading) {
 
 export class VideoRenderer {
   constructor(canvas, spec) {
-    this.canvas = canvas; this.spec = spec; this.heading = 0;
+    this.canvas = canvas; this.spec = spec; this.heading = 0; this.heldFrames = [];
     const gl = this.gl = canvas.getContext('webgl', { alpha: false, antialias: false });
     if (!gl) throw new Error('WebGL is unavailable.');
     this.buffers = []; this.shaders = [];
@@ -101,7 +105,17 @@ export class VideoRenderer {
   // which shows up as a green strip where the next frame is half written (seen on Steam Frame / V4L2).
   watch(video) {
     if (this.watched === video) return;
+    this.releaseFrames();
+    this.unwatch?.(); this.unwatch = null;
     if (this.watched && this.frameCallback) this.watched.cancelVideoFrameCallback?.(this.frameCallback);
+    if (video) {
+      // Seeks, loops, source switches and resolution changes make the decoder flush and reclaim
+      // its buffers; held frames would stall it, so give them back right away.
+      const release = () => this.releaseFrames();
+      const events = ['seeking', 'emptied', 'loadstart', 'ended', 'waiting', 'resize'];
+      for (const type of events) video.addEventListener(type, release);
+      this.unwatch = () => { for (const type of events) video.removeEventListener(type, release); };
+    }
     this.watched = video; this.frameCallback = null; this.presented = 0; this.uploaded = -1; this.lastCallback = 0;
     if (!video?.requestVideoFrameCallback) return;
     const tick = (now, metadata) => {
@@ -112,18 +126,33 @@ export class VideoRenderer {
     this.frameCallback = video.requestVideoFrameCallback(tick);
   }
   upload(video) {
-    if (video.readyState < 2) return false;
+    if (video.readyState < 2) { this.releaseFrames(); return false; }
     this.watch(video);
     // Fall back to copying every frame if frame callbacks stall while the video plays.
     const callbacksLive = this.frameCallback && (video.paused || performance.now() - this.lastCallback < 250);
     if (callbacksLive && this.uploaded === this.presented) return true;
     const gl = this.gl;
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.texture);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, video);
+    // Upload through a WebCodecs VideoFrame and keep the last few open: an open VideoFrame holds the
+    // decoded buffer, so the hardware decoder cannot reuse it while the GPU copy may still read it.
+    // On Steam Frame (V4L2 Iris + WebGL) the buffer is otherwise recycled too early and the next frame
+    // appears half written as a green strip.
+    let source = video;
+    if (typeof VideoFrame === 'function') {
+      try { source = new VideoFrame(video); } catch { source = video; }
+    }
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, source);
+    if (source !== video) {
+      this.heldFrames.push(source);
+      while (this.heldFrames.length > HELD_FRAMES) this.heldFrames.shift().close();
+    }
     const error = gl.getError();
     if (error !== gl.NO_ERROR) throw new Error(`The video frame could not be used as a WebGL texture (${error}).`);
     this.uploaded = this.presented;
     return true;
+  }
+  releaseFrames() {
+    for (const frame of this.heldFrames.splice(0)) frame.close();
   }
   clear(framebuffer = null) {
     const gl = this.gl;
@@ -174,6 +203,7 @@ export class Player {
   }
   setSource(video, spec) {
     this.video = video;
+    this.renderer?.watch(video || null);
     if (spec) this.renderer?.setSpec(spec);
   }
   async enter() {

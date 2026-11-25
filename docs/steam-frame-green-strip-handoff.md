@@ -84,8 +84,38 @@ Taken together, the decoded video frame is incomplete when it is sampled, or the
 ### Frame comparison and 2D result (03:13–03:33)
 
 - In the 03:13:11 hit frame, the content left of the strip best matches capture frames 3–5 later (mean abs diff 1.5). The content right of it best matches the previous frame (5.2). The strip is the decoder's write front: the buffer on display is already being overwritten with a frame about two video frames ahead.
-- **The user saw the same green flash in YouTube's ordinary 2D player**, where the viewer's WebGL path is not involved. The root cause is therefore in Chromium's V4L2/Iris decode and display path, which recycles a buffer that is still being shown. It is not in the viewer.
-- Viewer mitigation (`src/render.js`): copy each video frame into the texture once, right after `requestVideoFrameCallback` reports it presented, instead of on every XR frame. This shortens the window in VR but cannot remove the race. Its effect on flash frequency has not been measured.
+- The user also saw the flash in YouTube's own player for the VR180 video. That player still renders through YouTube's WebGL spherical viewer, so it uses the same WebGL video upload path. It is not a compositor-only test.
+- **Flat 8K AV1** (itag 571, `av01.0.17M.08`, same codec and itag) in YouTube's ordinary player goes through the compositor without WebGL. The user saw no strips there, while VR showed them often. The decoder does not corrupt frames on its own. The failure is specific to WebGL uploads.
+
+## Root cause and fix (verified 2026-11-25, 04:39–04:58)
+
+On this configuration (V4L2 stateful decoder, MMAP CAPTURE queue with 10 buffers, `MailboxVideoFrameConverter`), a decoded buffer returns to the decoder as soon as the last reference to its frame is dropped. The compositor holds frames until its GPU reads finish (read-lock fences), so it is safe. A WebGL `texImage2D(video)` copy releases the frame too early, and the decoder writes the next frame into a buffer the copy still reads.
+
+Neither upstream Chromium `main` (2026-11-24) nor the upstream Iris driver (through 2026-11) changes this lifetime or release logic. The Qualcomm PR merged 2026-11-24 that uses the firmware output count for AV1/VP9 split mode fixes seek failures, not this.
+
+Viewer fix (`src/render.js`): upload each new frame through a WebCodecs `VideoFrame` and keep the latest one open until the next upload, which holds the decoded buffer for one frame interval. Held frames are released on `seeking`, `emptied`, `loadstart`, `ended`, `waiting`, `resize` and source changes, so they never block a decoder flush. Holding 3 frames starved the 10-buffer decoder and made playback stall and blink. One frame does not.
+
+A/B test: a single looping 2160p VR180 video in VR, with each run recorded from the Steam Remote Play window and scanned frame by frame.
+
+| Build | Frames scanned | Strip frames | Events |
+| --- | --- | --- | --- |
+| Hold 1 frame | 28,800 | 0 | 0 |
+| No hold (one-line change) | 28,800 | 15 | about 10 |
+
+## Loop and next-video stall — fixed
+
+The stereo video follows the original's playhead. After a loop, seek or playlist advance, its seek target was often outside what `RangeStream` had fetched. The original kept playing from its own buffer, so the stream chased a moving target one segment at a time. The result was about 14 s of black after a loop, and sometimes a seek that never finished because sync skipped correction while `seeking`. Fixes in `src/youtube.js`:
+
+- While the stereo video is not ready, the original is paused, audio included, and resumes when the stereo video catches up. The end of the stream counts as ready. Hold pauses do not change the user's play intent (`src/main.js`).
+- A seek stuck longer than 1.5 s is retargeted to the original's current time.
+
+Verified in VR: at the loop point the original was held for under 2 s, then both ran in sync (about 0.1 s apart).
+
+## Still open
+
+- **First VR entry after a page reload** aborts the Chromium XR process with SteamVR `ASSERT: "pVulkanDevice->m_pDevice == m_pExportDevice"` (`sharedresource_linux.cpp:1693`). Seen at 04:19:53, 04:25:04, 04:26:29, 04:38:02 and 04:49:45. A second press works, and a freshly started browser enters fine.
+- After `systemctl --user restart steamvr.service`, every WebGL upload of hardware-decoded video failed with `GL_INVALID_VALUE` ("Couldn't create SkImage from source shared image"), even across Chromium restarts. A reboot cleared it.
+- Root fix in Chromium: keep the V4L2 buffer until consumers' release sync tokens or fences signal, or make the WebGL upload path hold frames as the compositor does.
 
 ## First "Enter VR" always failing — fixed
 

@@ -188,7 +188,8 @@ function install() {
       if (video) {
         const original = video;
         const changed = () => {
-          if (!busy && !error) intendedPlaying = !original.paused;
+          // Pauses made by the stereo stream's buffering hold are not the user's intent.
+          if (!busy && !error && !stereo?.holding) intendedPlaying = !original.paused;
           update();
         };
         original.addEventListener('play', changed); original.addEventListener('pause', changed);

@@ -157,11 +157,32 @@ export class LinkedVideo {
     mediaURL(result.format.url);
     document.body.append(video);
     const listen = (target, type, callback) => { target.addEventListener(type, callback); this.listeners.push(() => target.removeEventListener(type, callback)); };
+    let seekStarted = 0;
     const sync = () => {
       if (this.disposed || !this.active || video.readyState < 1) return;
-      if (!video.seeking && Math.abs(original.currentTime - video.currentTime) > 0.15) video.currentTime = Math.min(original.currentTime, video.duration - 0.01);
+      const drift = Math.abs(original.currentTime - video.currentTime);
+      // The range stream follows the original's playhead, so a seek target the original has since
+      // moved away from may never be buffered and the seek would wait forever. Retarget it.
+      const stuck = video.seeking && performance.now() - seekStarted > 1500 && drift > 0.5;
+      if ((!video.seeking && drift > 0.15) || stuck) {
+        seekStarted = performance.now();
+        video.currentTime = Math.min(original.currentTime, video.duration - 0.01);
+      }
       video.playbackRate = original.playbackRate;
-      if (original.paused || original.ended || original.readyState < 3) video.pause();
+      // While the stereo stream is still fetching (after a seek, loop or new video), hold the original
+      // so it doesn't run ahead: chasing a moving playhead one segment at a time can take many seconds.
+      const wantsPlay = this.holding || !(original.paused || original.ended);
+      // At the end of the stream there is no future data, so readyState stays at 2; treat it as ready
+      // or the original would be held just before it ends or loops.
+      const atEnd = video.ended || video.currentTime >= video.duration - 0.25;
+      const stereoReady = !video.seeking && (video.readyState >= 3 || (atEnd && video.readyState >= 2));
+      if (wantsPlay && !stereoReady) {
+        if (!original.paused) { this.holding = true; original.pause(); }
+        video.pause();
+        return;
+      }
+      if (this.holding) { this.releaseHold(); return; }
+      if (!wantsPlay || original.readyState < 3) video.pause();
       else if (video.paused) video.play().catch(error => { if (this.active && error.name !== 'AbortError') onError(error); });
     };
     this.sync = sync;
@@ -172,7 +193,13 @@ export class LinkedVideo {
     this.stream = new RangeStream(video, result, () => original.currentTime, onError, signal);
     this.ready = this.stream.ready;
   }
+  releaseHold() {
+    if (!this.holding) return;
+    this.holding = false;
+    this.original.play().catch(() => {});
+  }
   setActive(active) {
+    if (!active) this.releaseHold();
     this.active = active;
     if (active && !this.restoreVideoTracks) this.restoreVideoTracks = suspendVideoTracks(this.original);
     if (!active) { this.restoreVideoTracks?.(); this.restoreVideoTracks = null; }
@@ -187,6 +214,7 @@ export class LinkedVideo {
     await waitForFrame(this.video, signal);
   }
   dispose() {
+    this.releaseHold();
     this.disposed = true; this.active = false; clearInterval(this.timer);
     this.stream.dispose();
     for (const remove of this.listeners) remove();
