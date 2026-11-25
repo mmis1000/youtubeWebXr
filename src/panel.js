@@ -2,8 +2,10 @@ import { colors as C, fontStack } from './theme.js';
 
 export const PANEL_HEIGHT = 312;
 export const qualityPageSize = count => count > 6 ? 4 : 6;
+export const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 const font = (weight, size) => `${weight} ${size}px ${fontStack}`;
 const timeLabel = time => { const n = Math.max(0, Math.floor(time || 0)); return `${Math.floor(n / 60)}:${String(n % 60).padStart(2, '0')}`; };
+const speedLabel = rate => `${Number((rate || 1).toFixed(2))}×`;
 function rounded(c, x, y, w, h, r) { c.beginPath(); c.roundRect(x, y, w, h, r); }
 function icon(c, name, x, y, size, color, angle = 0) {
   c.save(); c.translate(x, y); c.fillStyle = color; c.strokeStyle = color;
@@ -25,6 +27,18 @@ function icon(c, name, x, y, size, color, angle = 0) {
     c.beginPath(); c.ellipse(0,0,size*.4,size*.24,0,0,Math.PI*2); c.stroke(); c.beginPath(); c.arc(0,0,size*.1,0,Math.PI*2); c.fill();
     c.beginPath(); c.moveTo(-size*.38,-size*.34); c.lineTo(size*.38,size*.34); c.stroke();
   }
+  if (name === 'volume' || name === 'muted') {
+    c.beginPath();
+    c.moveTo(-size*.36,-size*.14); c.lineTo(-size*.16,-size*.14); c.lineTo(size*.06,-size*.34);
+    c.lineTo(size*.06,size*.34); c.lineTo(-size*.16,size*.14); c.lineTo(-size*.36,size*.14); c.closePath(); c.fill();
+    if (name === 'muted') {
+      c.beginPath(); c.moveTo(size*.18,-size*.16); c.lineTo(size*.42,size*.16);
+      c.moveTo(size*.42,-size*.16); c.lineTo(size*.18,size*.16); c.stroke();
+    } else {
+      c.beginPath(); c.arc(size*.1,0,size*.2,-Math.PI*.35,Math.PI*.35); c.stroke();
+      c.beginPath(); c.arc(size*.1,0,size*.35,-Math.PI*.38,Math.PI*.38); c.stroke();
+    }
+  }
   if (name === 'warn') {
     c.beginPath(); c.moveTo(0,-size*.4); c.lineTo(size*.42,size*.34); c.lineTo(-size*.42,size*.34); c.closePath(); c.stroke();
     c.beginPath(); c.moveTo(0,-size*.12); c.lineTo(0,size*.1); c.stroke(); c.beginPath(); c.arc(0,size*.23,size*.035,0,Math.PI*2); c.fill();
@@ -35,6 +49,7 @@ function icon(c, name, x, y, size, color, angle = 0) {
 
 export function paintPanel(c, s, { hovered = [], pressed = [], dragRatio, hoverRatio, menu = false, menuPage = 0, now = 0 } = {}) {
   const buttons = [], blocked = s.busy || !!s.error || !Number.isFinite(s.duration) || s.duration <= 0;
+  const activeMenu = menu === true ? 'quality' : menu || '';
   const fit = (value, width) => {
     let text = String(value); if (c.measureText(text).width <= width) return text;
     while (text && c.measureText(text + '…').width > width) text = text.slice(0, -1);
@@ -59,14 +74,15 @@ export function paintPanel(c, s, { hovered = [], pressed = [], dragRatio, hoverR
   c.clearRect(0,0,1024,512);
   rounded(c,1,1,1022,PANEL_HEIGHT-2,36); c.fillStyle=C.surface; c.fill(); c.strokeStyle=C.line; c.lineWidth=2; c.stroke();
   c.textAlign='left'; c.fillStyle=C.text; c.font=font(600,30);
-  c.fillText(fit(s.title || 'YouTube VR180',menu?720:800),48,62);
+  c.fillText(fit(s.title || 'YouTube WebXR', 720),48,62);
   c.font=font(400,s.error?24:23); c.fillStyle=s.error?C.warn:C.sub;
   if (s.error || s.busy) {
     icon(c,s.error?'warn':'spin',60,92,26,s.error?C.warn:C.sub,now/240);
-    c.fillText(fit(s.error || s.status || `Loading ${s.requestedQuality}p…`,790),84,100);
+    c.fillText(fit(s.error || s.status || `Loading ${s.requestedQuality}p…`,720),84,100);
   } else c.fillText(`${s.quality ? s.quality + 'p · ' : ''}${s.layout || 'Stereo 180°'}`,48,100);
   button('hide-ui','',900,30,76,76,{glyph:'hide',bare:true,color:C.sub});
-  if (menu) button('exit','Exit',788,32,100,72);
+  if (activeMenu) button('exit','Exit',788,32,100,72);
+  else button('speed', speedLabel(s.playbackRate), 792, 32, 96, 72, { disabled: blocked });
 
   const elapsed = dragRatio == null ? s.time : dragRatio * s.duration;
   const fraction = Math.max(0,Math.min(1,(elapsed || 0)/(s.duration || 1))), playhead = 128+768*fraction;
@@ -82,9 +98,9 @@ export function paintPanel(c, s, { hovered = [], pressed = [], dragRatio, hoverR
     c.font=font(600,22); c.fillStyle=C.text; c.textAlign='center'; c.fillText(timeLabel(ratio*s.duration),128+768*ratio,128);
   }
   const quality = s.busy || s.error ? s.requestedQuality : s.quality;
-  if (menu) {
+  if (activeMenu === 'quality') {
     const qualities=s.qualities || [], paged=qualities.length>6, size=qualityPageSize(qualities.length);
-    button('quality-back','‹ Back',48,204,112,72);
+    button('menu-back','‹ Back',48,204,112,72);
     if (paged) button('quality-previous','‹',176,204,72,72,{disabled:menuPage===0});
     const start=paged?264:184, width=paged?132:(792-Math.max(0,qualities.length-1)*12)/Math.max(1,qualities.length), gap=paged?16:12;
     for (const [i,height] of qualities.slice(menuPage*size,(menuPage+1)*size).entries()) {
@@ -92,8 +108,31 @@ export function paintPanel(c, s, { hovered = [], pressed = [], dragRatio, hoverR
         {selected:height===s.quality&&!s.busy,pending:s.busy&&!s.quality&&height===s.requestedQuality});
     }
     if (paged) button('quality-next','Next ›',856,204,120,72,{disabled:(menuPage+1)*size>=qualities.length});
+  } else if (activeMenu === 'speed') {
+    button('menu-back','‹ Back',48,204,112,72);
+    const width = (792 - (SPEED_OPTIONS.length - 1) * 12) / SPEED_OPTIONS.length;
+    for (const [i, rate] of SPEED_OPTIONS.entries()) {
+      button(`speed:${rate}`, speedLabel(rate), 184 + i * (width + 12), 204, width, 72,
+        { selected: Math.abs((s.playbackRate || 1) - rate) < 0.01 });
+    }
+  } else if (activeMenu === 'audio') {
+    const vol = Math.round((s.muted ? 0 : (s.volume ?? 1)) * 100);
+    button('menu-back','‹ Back',48,204,112,72);
+    button('mute', s.muted ? 'Unmute' : 'Mute', 184, 204, 148, 72, { glyph: s.muted ? 'muted' : 'volume', selected: !!s.muted });
+    button('vol-down', '−', 348, 204, 80, 72);
+    c.font = font(600, 24); c.fillStyle = C.text; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillText(`${vol}%`, 472, 240); c.textBaseline = 'alphabetic';
+    button('vol-up', '+', 516, 204, 80, 72);
+    if (s.cinema) {
+      const pct = Math.round((s.cinemaScale ?? 1) * 100);
+      button('zoom-out', '−', 640, 204, 80, 72);
+      c.font = font(600, 22); c.fillStyle = C.sub; c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.fillText(`Screen ${pct}%`, 800, 240); c.textBaseline = 'alphabetic';
+      button('zoom-in', '+', 896, 204, 80, 72);
+    }
   } else {
     button('recenter','Recenter',48,204,200,72,{glyph:'recenter'});
+    button('audio','',268,202,76,76,{glyph:s.muted?'muted':'volume'});
     button('back','',366,202,76,76,{glyph:'back',disabled:blocked});
     if (s.error) button('retry','Retry',452,204,120,72,{fill:C.warn,color:C.surface});
     else button('toggle','',466,194,92,92,{glyph:s.busy?'spin':s.paused?'play':'pause',primary:true,disabled:blocked});

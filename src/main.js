@@ -1,12 +1,13 @@
 import { decodeMesh } from './metadata.js';
 import { observeMedia } from './observe.js';
-import { Player, sphere, layoutLabel } from './render.js';
+import { Player, sphere, cinemaScreen, layoutLabel } from './render.js';
 import { StereoResolver, LinkedVideo, waitForFrame, MIN_VR_HEIGHT } from './youtube.js';
 import { version } from '../extension/manifest.json';
 import { colors, fontStack } from './theme.js';
 import { seekTarget } from './xr-math.js';
 
 const STORAGE_KEY = 'youtube-webxr:last-resolution';
+const CINEMA_SCALE_KEY = 'youtube-webxr:cinema-scale';
 if (!window.__youtubeWebXRLoaded && window.MediaSource && window.SourceBuffer) {
   window.__youtubeWebXRLoaded = true;
   install();
@@ -16,11 +17,17 @@ function install() {
   let video, source, stereo, spec, ui, loadController;
   let generation = 0, entryGeneration = 0, mode = 'auto', busy = false, error = '', status = '';
   let qualities = [], quality = 0, targetQuality = 1080, requestedQuality = 1080, xrSupported = false;
+  let cinemaScale = 1;
   let intendedPlaying = false, restorePlaying = false, started = false, navigating = false, detailsOpen = false;
   let removeVideoListeners = () => {};
   const resolver = new StereoResolver();
   let lastDiagnosticsAt = -Infinity, attachTimer = 0;
-  try { const saved = Number(localStorage.getItem(STORAGE_KEY)); if (Number.isInteger(saved) && saved > 0 && saved <= 16384) targetQuality = Math.max(MIN_VR_HEIGHT, saved); } catch {}
+  try {
+    const saved = Number(localStorage.getItem(STORAGE_KEY));
+    if (Number.isInteger(saved) && saved > 0 && saved <= 16384) targetQuality = Math.max(MIN_VR_HEIGHT, saved);
+    const savedScale = Number(localStorage.getItem(CINEMA_SCALE_KEY));
+    if (Number.isFinite(savedScale) && savedScale >= 0.5 && savedScale <= 2.0) cinemaScale = savedScale;
+  } catch {}
   const id = () => new URL(location.href).searchParams.get('v');
   const activeVideo = () => (stereo?.unified ? stereo.video : video);
   const state = () => {
@@ -28,6 +35,8 @@ function install() {
     return {
       title: document.getElementById('movie_player')?.getVideoData?.()?.title || document.title.replace(/ - YouTube$/, ''),
       time: active?.currentTime || 0, duration: active?.duration || 0, paused: busy ? !intendedPlaying : active?.paused ?? true,
+      volume: active?.volume ?? 1, muted: !!active?.muted, playbackRate: active?.playbackRate || 1,
+      cinema: !!spec?.cinema, cinemaScale,
       quality, qualities, requestedQuality, busy, error, status, layout: spec?.layout || 'VR'
     };
   };
@@ -69,11 +78,40 @@ function install() {
     if (busy) { controller.abort(e); return; }
     error = e.message || String(e); status = error; activeVideo()?.pause(); video?.pause(); player.setSource(null); update();
   }
-  async function specification(metadata) {
+  function cinemaAspect(displayed, stereoMode) {
+    const raw = displayed?.videoWidth && displayed?.videoHeight ? displayed.videoWidth / displayed.videoHeight : 16 / 9;
+    // Account for full-resolution packed stereo (e.g. 3840x1080 SBS -> 16:9 per eye, 1920x2160 TB -> 16:9 per eye)
+    // while leaving half-SBS/half-TB at their display aspect ratio.
+    if ((stereoMode === 2 || stereoMode === 4) && raw > 2.5) return raw / 2;
+    if (stereoMode === 1 && raw < 1.1) return raw * 2;
+    return raw;
+  }
+  async function specification(metadata, displayed) {
+    if (mode === 'cinema' || mode === 'cinema-sbs' || mode === 'cinema-tb') {
+      const stereoMode = mode === 'cinema-sbs' ? 2 : mode === 'cinema-tb' ? 1 : 0;
+      const aspect = cinemaAspect(displayed, stereoMode);
+      return {
+        meshes: [cinemaScreen(aspect, cinemaScale)], stereoMode, pose: [0, 0, 0],
+        cinema: true, aspect, layout: stereoMode ? '3D Cinema' : 'Virtual Cinema'
+      };
+    }
     if (mode !== 'auto') return { meshes: [sphere()], stereoMode: { sbs: 2, tb: 1, mono: 0 }[mode], pose: [0,0,0],
       layout: mode === 'mono' ? 'Monoscopic 180°' : 'Stereo 180°' };
-    if (!metadata?.projection) throw new Error('This stream has no projection metadata. Choose a manual layout in VR details if you know its packing.');
+    if (!metadata?.projection || metadata.projection.type === 'cinema') {
+      const stereoMode = [0, 1, 2, 4].includes(metadata?.stereoMode) ? metadata.stereoMode : 0;
+      const aspect = cinemaAspect(displayed, stereoMode);
+      return {
+        meshes: [cinemaScreen(aspect, cinemaScale)], stereoMode, pose: [0, 0, 0],
+        cinema: true, aspect, layout: stereoMode ? '3D Cinema' : 'Virtual Cinema'
+      };
+    }
     const p = metadata.projection;
+    if (p.type === 'cubemap') {
+      return {
+        meshes: [sphere([0, 0, 0, 0])], stereoMode: metadata.stereoMode ?? 0, pose: metadata.pose || [0, 0, 0],
+        cubemapMode: p.eac ? 2 : 1, eac: !!p.eac, eacPadding: p.padding || 0, layout: layoutLabel(metadata)
+      };
+    }
     const meshes = p.type === 'mesh' ? await decodeMesh(p.payload) : p.type === 'equirectangular' ? [sphere(p.bounds)] : null;
     if (!meshes) throw new Error('This projection is not supported.');
     if (metadata.stereoMode === 3 && meshes.length !== 2) throw new Error('Custom stereo requires two eye meshes.');
@@ -93,9 +131,9 @@ function install() {
     try {
       let metadata, result;
       const observedVR = source?.metadata?.projection && [0,1,2,3,4].includes(source.metadata.stereoMode);
-      if (mode !== 'auto' || (observedVR && !id())) {
-        metadata = source?.metadata;
-        qualities = mode === 'auto' ? [original.videoHeight].filter(h => h >= MIN_VR_HEIGHT) : [];
+      if (mode !== 'auto' || (observedVR && !id()) || !id()) {
+        metadata = source?.metadata || { container: 'Cinema', stereoMode: 0, projection: { type: 'cinema' }, pose: [0, 0, 0] };
+        qualities = mode === 'auto' && observedVR ? [original.videoHeight].filter(h => h >= MIN_VR_HEIGHT) : [];
         await waitForFrame(original, controller.signal);
       } else {
         result = await resolver.resolve(id(), height, controller.signal, formats => {
@@ -103,15 +141,21 @@ function install() {
           qualities = formats.qualities; update();
         });
         controller.signal.throwIfAborted();
-        candidate = new LinkedVideo(original, result, e => mediaError(e, controller, token), controller.signal);
-        await candidate.prepare(controller.signal);
-        metadata = result.metadata;
+        if (result.cinemaDirect) {
+          metadata = observedVR ? source.metadata : result.metadata;
+          qualities = observedVR ? [original.videoHeight].filter(h => h >= MIN_VR_HEIGHT) : [];
+          await waitForFrame(original, controller.signal);
+        } else {
+          candidate = new LinkedVideo(original, result, e => mediaError(e, controller, token), controller.signal);
+          await candidate.prepare(controller.signal);
+          metadata = result.metadata;
+        }
       }
-      const nextSpec = await specification(metadata);
+      const displayed = candidate?.video || original;
+      const nextSpec = await specification(metadata, displayed);
       controller.signal.throwIfAborted();
       if (token !== generation || original !== video) return;
       stereo = candidate; spec = nextSpec;
-      const displayed = stereo?.video || original;
       quality = displayed.videoHeight;
       if (preview && !player.session) player.preview(displayed, spec, ui.previewParent);
       else player.setSource(displayed, spec);
@@ -202,6 +246,31 @@ function install() {
     }
     if (name === 'retry') return prepare(requestedQuality, !player.session);
     const active = activeVideo();
+    if (name === 'mute' && active) {
+      const next = !active.muted;
+      active.muted = next;
+      if (video && video !== active) video.muted = next;
+      update(); return;
+    }
+    if (name === 'volume' && active) {
+      const next = Math.max(0, Math.min(1, Math.round(((active.muted ? 0 : active.volume) + value) * 100) / 100));
+      active.volume = next; active.muted = next === 0;
+      if (video && video !== active) { video.volume = next; video.muted = next === 0; }
+      update(); return;
+    }
+    if (name === 'speed' && active) {
+      const rate = Math.max(0.25, Math.min(4, Number(value) || 1));
+      active.playbackRate = rate;
+      if (video && video !== active) video.playbackRate = rate;
+      update(); return;
+    }
+    if (name === 'zoom' && spec?.cinema) {
+      cinemaScale = Math.max(0.5, Math.min(2.0, Math.round((cinemaScale + value) * 100) / 100));
+      try { localStorage.setItem(CINEMA_SCALE_KEY, String(cinemaScale)); } catch {}
+      spec = { ...spec, meshes: [cinemaScreen(spec.aspect, cinemaScale)] };
+      player.setSource(stereo?.video || video, spec);
+      update(); return;
+    }
     if (busy || error || !active) return;
     if (name === 'toggle') {
       intendedPlaying = active.paused;
@@ -217,7 +286,6 @@ function install() {
       if (video) {
         const original = video;
         const changed = () => {
-          // Pauses made by unified MSE mode or buffering hold are not the user's intent.
           if (!busy && !error && !stereo?.holding && !stereo?.unified) intendedPlaying = !original.paused;
           update();
         };
@@ -230,7 +298,7 @@ function install() {
   function diagnostics() {
     return JSON.stringify({ extensionVersion: version, videoId: id(), webxr: { available: !!navigator.xr, immersiveVR: xrSupported },
       video: video ? { width: video.videoWidth, height: video.videoHeight, readyState: video.readyState, mediaSourceObserved: !!source } : null,
-      selectedMode: mode, state: { busy, status, error, actualResolution: quality, availableResolutions: qualities },
+      selectedMode: mode, state: { busy, status, error, actualResolution: quality, availableResolutions: qualities, cinema: !!spec?.cinema, layout: spec?.layout || '' },
       stereoStream: stereo ? { itag: stereo.result.format.itag, width: stereo.video.videoWidth, height: stereo.video.videoHeight,
         playbackMode: stereo.unified ? 'unified-mse' : 'linked-video', hasAudio: !!stereo.stream.hasAudio,
         stereoMode: stereo.result.metadata.stereoMode, projection: stereo.result.metadata.projection.type, meshCount: spec?.meshes.length,
@@ -317,11 +385,19 @@ function install() {
     const support = make('p', '', details); support.setAttribute('role', 'status');
     const previewButton = make('button', 'Eye preview', details); previewButton.addEventListener('click', preview);
     const label = make('label', 'Projection', details), select = make('select', '', label);
-    for (const [value, text] of [['auto','Automatic'],['sbs','Manual — VR180 left-right'],['tb','Manual — VR180 top-bottom'],['mono','Manual — 180° monoscopic']]) {
+    for (const [value, text] of [
+      ['auto', 'Automatic'],
+      ['cinema', 'Virtual Cinema — 2D'],
+      ['cinema-sbs', 'Virtual Cinema — 3D left-right'],
+      ['cinema-tb', 'Virtual Cinema — 3D top-bottom'],
+      ['sbs', 'Manual — VR180 left-right'],
+      ['tb', 'Manual — VR180 top-bottom'],
+      ['mono', 'Manual — 180° monoscopic']
+    ]) {
       const option = make('option', text, select); option.value = value;
     }
     select.addEventListener('change', () => { mode = select.value; if (player.mode) { intendedPlaying = !activeVideo().paused; prepare(targetQuality, player.mode === 'preview'); } });
-    make('p', 'In VR: point and trigger to use controls. Trigger away from the panel to hide it; trigger again to show it. Right stick: turn 30°. Left stick: seek 10 seconds. Return the stick to center between steps. Squeeze to reset the view and recenter the panel.', details);
+    make('p', 'In VR: point and trigger to use controls. Trigger away from the panel to hide it; trigger again to show it. Left stick: seek ±10s / volume up-down. Right stick: turn 30° / cinema zoom up-down. Squeeze to recenter (supports reclining & lying down).', details);
     const inspect = make('button', 'Show diagnostics', details);
     const report = make('textarea', '', details); report.readOnly = true; report.hidden = true; report.setAttribute('aria-label', 'Playback diagnostics');
     inspect.addEventListener('click', () => { report.hidden = !report.hidden; lastDiagnosticsAt = -Infinity; update(); });
@@ -332,8 +408,6 @@ function install() {
       if (detailsOpen && event.target.closest?.('.ytp-settings-button') && ui.entryGroup.parentNode?.contains(event.target)) { detailsOpen = false; update(); }
     }, true);
     refresh();
-    // The XR runtime can come up after the page loads (e.g. right after the browser starts),
-    // so re-check on device changes and keep polling while VR is reported unavailable.
     const checkXR = () => navigator.xr?.isSessionSupported('immersive-vr')
       .then(supported => { if (supported !== xrSupported) { xrSupported = supported; update(); } }).catch(() => {});
     checkXR();

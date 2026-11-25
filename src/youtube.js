@@ -3,6 +3,8 @@ import { RangeStream, loadIndex } from './stream.js';
 import { mediaURL, fetchMedia } from './media.js';
 export { mediaURL } from './media.js';
 export const MIN_VR_HEIGHT = 720;
+export const MIN_CINEMA_HEIGHT = 360;
+const VR_PROJECTIONS = ['MESH', 'EQUIRECTANGULAR', 'CUBEMAP', 'EQUIANGULAR_CUBEMAP'];
 
 export const INNERTUBE_CLIENTS = [
   {
@@ -68,29 +70,49 @@ function capabilityScore(format, capabilities) {
 
 function codecScore(mime) { return mime.includes('avc1') ? 3 : /vp0?9/.test(mime) ? 2 : 1; }
 
+function isHDR(format) {
+  return format.colorInfo?.transferCharacteristics === 'COLOR_TRANSFER_CHARACTERISTICS_SMPTEST2084'
+    || format.colorInfo?.transferCharacteristics === 'COLOR_TRANSFER_CHARACTERISTICS_ARIB_STD_B67'
+    || /av01\.\d+\.\w+\.10|vp09\.02/.test(format.mimeType || '');
+}
+
+function formatRank(a, b, capabilities) {
+  return (isHDR(a) ? 1 : 0) - (isHDR(b) ? 1 : 0)
+    || capabilityScore(b, capabilities) - capabilityScore(a, capabilities)
+    || codecScore(b.mimeType) - codecScore(a.mimeType)
+    || (b.fps || 0) - (a.fps || 0)
+    || (b.bitrate || 0) - (a.bitrate || 0);
+}
+
 export function chooseFormats(formats, maxHeight, canPlay, options = {}) {
   const { maxTextureSize = Infinity, capabilities } = options;
-  return formats.filter(f => f.url && ['MESH', 'EQUIRECTANGULAR'].includes(f.projectionType)
+  return formats.filter(f => f.url && VR_PROJECTIONS.includes(f.projectionType)
     && /^video\/(mp4|webm)(;|$)/.test(f.mimeType)
     && Number.isInteger(f.height) && f.height >= MIN_VR_HEIGHT && f.height <= maxHeight
     && (!f.width || f.width <= maxTextureSize) && f.height <= maxTextureSize
     && canPlay(f.mimeType) && !f.drmFamilies?.length
     && capabilityScore(f, capabilities) >= 0)
-    .sort((a, b) => b.height - a.height
-      || capabilityScore(b, capabilities) - capabilityScore(a, capabilities)
-      || codecScore(b.mimeType) - codecScore(a.mimeType)
-      || (b.fps || 0) - (a.fps || 0)
-      || (b.bitrate || 0) - (a.bitrate || 0));
+    .sort((a, b) => b.height - a.height || formatRank(a, b, capabilities));
+}
+
+export function chooseFlatFormats(formats, maxHeight, canPlay, options = {}) {
+  const { maxTextureSize = Infinity, capabilities } = options;
+  return formats.filter(f => f.url && !VR_PROJECTIONS.includes(f.projectionType)
+    && /^video\/(mp4|webm)(;|$)/.test(f.mimeType)
+    && f.initRange && f.indexRange
+    && Number.isInteger(f.height) && f.height >= MIN_CINEMA_HEIGHT && f.height <= maxHeight
+    && (!f.width || f.width <= maxTextureSize) && f.height <= maxTextureSize
+    && canPlay(f.mimeType) && !f.drmFamilies?.length
+    && capabilityScore(f, capabilities) >= 0)
+    .sort((a, b) => b.height - a.height || formatRank(a, b, capabilities));
 }
 
 export function closestFormats(formats, height, canPlay, options = {}) {
-  const { capabilities } = options;
-  return chooseFormats(formats, Infinity, canPlay, options).sort((a, b) =>
+  const { capabilities, flat = false } = options;
+  const base = flat ? chooseFlatFormats(formats, Infinity, canPlay, options) : chooseFormats(formats, Infinity, canPlay, options);
+  return base.sort((a, b) =>
     Math.abs(a.height - height) - Math.abs(b.height - height) || a.height - b.height
-    || capabilityScore(b, capabilities) - capabilityScore(a, capabilities)
-    || codecScore(b.mimeType) - codecScore(a.mimeType)
-    || (b.fps || 0) - (a.fps || 0)
-    || (b.bitrate || 0) - (a.bitrate || 0));
+    || formatRank(a, b, capabilities));
 }
 
 export function chooseAudioFormats(formats, canPlay) {
@@ -145,8 +167,8 @@ export async function fetchPlayerResponse(videoId, visitor, signal, fetchFn = fe
         continue;
       }
       const advertised = data.streamingData?.adaptiveFormats || [];
-      if (advertised.some(f => f.url && ['MESH', 'EQUIRECTANGULAR'].includes(f.projectionType))) return data;
-      lastError = new Error('No compatible VR source at 720p or higher is available for this video.');
+      if (advertised.some(f => f.url && (VR_PROJECTIONS.includes(f.projectionType) || /^video\/(mp4|webm)(;|$)/.test(f.mimeType)))) return data;
+      lastError = new Error('No compatible video source is available for this video.');
     } catch (error) {
       if (signal?.aborted) throw error;
       lastError = error;
@@ -155,7 +177,7 @@ export async function fetchPlayerResponse(videoId, visitor, signal, fetchFn = fe
   throw lastError || new Error('YouTube did not make this video available to the VR client.');
 }
 
-async function validateVideoFormat(format, signal) {
+async function validateVideoFormat(format, signal, { flat = false } = {}) {
   const url = mediaURL(format.url);
   const end = Number(format.initRange?.end);
   if (Number(format.initRange?.start) !== 0 || !Number.isSafeInteger(end) || end < 0 || end >= MAX_INIT_BYTES) {
@@ -164,15 +186,22 @@ async function validateVideoFormat(format, signal) {
   url.searchParams.set('range', `0-${end}`);
   const header = await fetchMedia(url, signal);
   const initBytes = await limitedBytes(header, signal);
-  const metadata = readMetadata(initBytes);
-  if (!metadata?.projection || ![0, 1, 2, 3, 4].includes(metadata.stereoMode)) {
-    throw new Error('This representation does not contain supported VR projection metadata.');
-  }
-  if (metadata.projection.type === 'mesh') {
-    const meshes = await decodeMesh(metadata.projection.payload);
-    if (metadata.stereoMode === 3 && meshes.length !== 2) throw new Error('Custom stereo requires two eye meshes.');
-  } else if (metadata.projection.type !== 'equirectangular' || metadata.stereoMode === 3) {
-    throw new Error('This VR projection is unsupported.');
+  let metadata = readMetadata(initBytes);
+  if (flat) {
+    const stereoMode = [0, 1, 2, 4].includes(metadata?.stereoMode) ? metadata.stereoMode : 0;
+    metadata = { container: metadata?.container || 'Cinema', stereoMode, projection: { type: 'cinema' }, pose: [0, 0, 0] };
+  } else {
+    if (!metadata?.projection || ![0, 1, 2, 3, 4].includes(metadata.stereoMode)) {
+      throw new Error('This representation does not contain supported VR projection metadata.');
+    }
+    if (metadata.projection.type === 'mesh') {
+      const meshes = await decodeMesh(metadata.projection.payload);
+      if (metadata.stereoMode === 3 && meshes.length !== 2) throw new Error('Custom stereo requires two eye meshes.');
+    } else if (!['equirectangular', 'cubemap'].includes(metadata.projection.type) || metadata.stereoMode === 3) {
+      throw new Error('This VR projection is unsupported.');
+    } else if (metadata.projection.type === 'cubemap') {
+      metadata.projection.eac = format.projectionType === 'EQUIANGULAR_CUBEMAP';
+    }
   }
   const resolved = { ...format, url: header.url || format.url };
   const segments = await loadIndex(resolved, initBytes, signal);
@@ -203,16 +232,24 @@ async function discoverStereo(videoId, height, signal, onUpdate = () => {}) {
   if (!/^[\w-]{11}$/.test(videoId)) throw new Error('Open a YouTube watch page first.');
   const visitor = window.ytcfg?.get('VISITOR_DATA') || window.ytInitialPlayerResponse?.responseContext?.visitorData;
   if (!visitor) throw new Error('YouTube visitor information is unavailable. Reload this tab and try again.');
-  const data = await fetchPlayerResponse(videoId, visitor, signal);
+  let data;
+  try {
+    data = await fetchPlayerResponse(videoId, visitor, signal);
+  } catch (err) {
+    if (signal.aborted) throw err;
+    return { available: [], qualities: [], audio: null, cinemaDirect: true, dispose: () => {} };
+  }
   const probe = document.createElement('video');
   const canPlay = mime => probe.canPlayType(mime) && MediaSource.isTypeSupported(mime);
   const advertised = data.streamingData?.adaptiveFormats || [];
   const maxTextureSize = getMaxTextureSize();
-  const baseFormats = chooseFormats(advertised, Infinity, canPlay, { maxTextureSize });
-  if (!baseFormats.length) throw new Error('No compatible VR source at 720p or higher is available for this video.');
+  const vrFormats = chooseFormats(advertised, Infinity, canPlay, { maxTextureSize });
+  const flat = !vrFormats.length;
+  const baseFormats = flat ? chooseFlatFormats(advertised, Infinity, canPlay, { maxTextureSize }) : vrFormats;
+  if (!baseFormats.length) return { available: [], qualities: [], audio: null, cinemaDirect: true, dispose: () => {} };
   const capabilities = await probeCapabilities(baseFormats);
-  const formats = closestFormats(baseFormats, height, canPlay, { maxTextureSize, capabilities });
-  if (!formats.length) throw new Error('No compatible VR source at 720p or higher is available for this video.');
+  const formats = closestFormats(baseFormats, height, canPlay, { maxTextureSize, capabilities, flat });
+  if (!formats.length) return { available: [], qualities: [], audio: null, cinemaDirect: true, dispose: () => {} };
 
   const audioCandidates = chooseAudioFormats(advertised, canPlay);
   const audioPromise = validateAudioCandidates(audioCandidates, signal);
@@ -232,7 +269,7 @@ async function discoverStereo(videoId, height, signal, onUpdate = () => {}) {
       for (const format of candidates) {
         reqSignal?.throwIfAborted();
         try {
-          const item = await validateVideoFormat(format, reqSignal);
+          const item = await validateVideoFormat(format, reqSignal, { flat });
           validated.set(h, item);
           return item;
         } catch (err) {
@@ -250,6 +287,8 @@ async function discoverStereo(videoId, height, signal, onUpdate = () => {}) {
 
   // Validate target resolution first (falling through to next closest if all candidates fail)
   // so playback starts in a single round-trip instead of blocking on every resolution group.
+  // For flat 2D videos, if the target height fails (e.g. GVS 403 PO-token gating), fall back
+  // immediately to cinemaDirect (YouTube's own authenticated <video>) instead of probing 20+ URLs.
   let firstItem = null, lastError;
   for (const h of heightOrder) {
     signal.throwIfAborted();
@@ -259,9 +298,13 @@ async function discoverStereo(videoId, height, signal, onUpdate = () => {}) {
     } catch (error) {
       if (signal.aborted) throw error;
       lastError = error;
+      if (flat) break;
     }
   }
-  if (!firstItem) throw lastError || new Error('No VR representation could be opened.');
+  if (!firstItem) {
+    if (flat) return { available: [], qualities: [], audio: null, cinemaDirect: true, dispose: () => {} };
+    throw lastError || new Error('No VR representation could be opened.');
+  }
 
   const audio = await audioPromise;
   signal.throwIfAborted();
@@ -359,6 +402,10 @@ export class StereoResolver {
       else result.dispose?.();
     }
     signal.throwIfAborted();
+    if (cached.cinemaDirect) {
+      onFormats({ qualities: [] });
+      return { cinemaDirect: true, metadata: { container: 'Cinema', stereoMode: 0, projection: { type: 'cinema' }, pose: [0, 0, 0] }, qualities: [] };
+    }
     if (cached.ensureHeight) await cached.ensureHeight(height, signal);
     signal.throwIfAborted();
     const selected = [...cached.available].sort((a, b) => Math.abs(a.format.height - height) - Math.abs(b.format.height - height)

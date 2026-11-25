@@ -28,6 +28,15 @@ function equi(bytes) {
   return { type: 'equirectangular', bounds };
 }
 
+function cubemap(bytes) {
+  if (!bytes || bytes.length === 0) return { type: 'cubemap', layout: 0, padding: 0 };
+  if (bytes.length < 12 || bytes[0] !== 0) throw new Error('Unsupported cubemap metadata.');
+  const d = view(bytes);
+  const layout = d.getUint32(4), padding = d.getUint32(8);
+  if (layout !== 0) throw new Error('Unsupported cubemap layout.');
+  return { type: 'cubemap', layout, padding };
+}
+
 function mp4Metadata(bytes) {
   const containers = new Set(['moov', 'trak', 'mdia', 'minf', 'stbl']);
   const entries = new Set(['avc1', 'avc3', 'hvc1', 'hev1', 'vp09', 'av01']);
@@ -60,7 +69,7 @@ function mp4Metadata(bytes) {
       const data = items.find(x => ['equi', 'mshp', 'ytmp', 'cbmp'].includes(x.type));
       const payload = data && bytes.slice(data.body, data.end);
       const projection = !data ? null : data.type === 'equi' ? equi(payload)
-        : data.type === 'cbmp' ? { type: 'unsupported-cubemap' } : { type: 'mesh', payload };
+        : data.type === 'cbmp' ? cubemap(payload) : { type: 'mesh', payload };
       return { container: 'MP4', stereoMode, projection, pose };
     }
     return null;
@@ -124,7 +133,7 @@ function webmMetadata(bytes) {
       const payload = data ? bytes.slice(data.body, data.end) : new Uint8Array(20);
       const kind = type ? uint(type) : 0;
       const projection = kind === 1 ? equi(payload) : kind === 3 ? { type: 'mesh', payload }
-        : kind === 2 ? { type: 'unsupported-cubemap' } : null;
+        : kind === 2 ? cubemap(data ? payload : new Uint8Array(0)) : null;
       const pose = [0x7673, 0x7674, 0x7675].map(id => {
         const x = items.find(item => item.id === id);
         if (!x) return 0;

@@ -1,4 +1,4 @@
-import { identity, transform, anchorMatrix, panelIntersection, thumbstickDirection } from './xr-math.js';
+import { identity, transform, anchorMatrix, panelIntersection, thumbstickDirection, thumbstickVertical } from './xr-math.js';
 import { paintPanel, PANEL_HEIGHT, qualityPageSize } from './panel.js';
 
 const halfHeight = PANEL_HEIGHT * .64 / 512 / 2;
@@ -20,7 +20,8 @@ const outline = vertices(outlinePoints);
 export class XRControls {
   constructor(gl, getState, action) {
     this.gl = gl; this.getState = getState; this.action = action;
-    this.anchor = identity(); this.pointers = new Map(); this.presses = new Map(); this.sticks = new Map();
+    this.anchor = identity(); this.pointers = new Map(); this.presses = new Map();
+    this.sticks = new Map(); this.vSticks = new Map();
     this.visible = true; this.panelHeight = PANEL_HEIGHT; this.menuPage = 0;
     this.canvas = document.createElement('canvas'); this.canvas.width = 1024; this.canvas.height = 512;
     this.ctx = this.canvas.getContext('2d'); this.menu = false; this.buttons = []; this.shaders = [];
@@ -74,11 +75,18 @@ export class XRControls {
       if (!hit) this.setVisible(!this.visible);
       else if (!hit.disabled && hit.id !== 'background') {
         if (hit.id === 'hide-ui') this.setVisible(false);
-        else if (hit.id === 'quality') { this.menu = !this.menu; this.menuPage = 0; }
-        else if (hit.id === 'quality-back') this.menu = false;
+        else if (hit.id === 'quality') { this.menu = this.menu === 'quality' ? false : 'quality'; this.menuPage = 0; }
+        else if (hit.id === 'speed') { this.menu = this.menu === 'speed' ? false : 'speed'; }
+        else if (hit.id === 'audio') { this.menu = this.menu === 'audio' ? false : 'audio'; }
+        else if (hit.id === 'menu-back' || hit.id === 'quality-back') this.menu = false;
         else if (hit.id === 'quality-next') this.menuPage++;
         else if (hit.id === 'quality-previous') this.menuPage = Math.max(0, this.menuPage - 1);
         else if (hit.id.startsWith('quality:')) this.action('quality', Number(hit.id.split(':')[1]));
+        else if (hit.id.startsWith('speed:')) { this.action('speed', Number(hit.id.split(':')[1])); this.menu = false; }
+        else if (hit.id === 'vol-down') this.action('volume', -0.1);
+        else if (hit.id === 'vol-up') this.action('volume', 0.1);
+        else if (hit.id === 'zoom-out') this.action('zoom', -0.15);
+        else if (hit.id === 'zoom-in') this.action('zoom', 0.15);
         else this.action(hit.id);
       }
     }
@@ -89,7 +97,9 @@ export class XRControls {
     else if (state.busy && !this.wasBusy && !this.visible) this.setVisible(true);
     this.lastError = state.error; this.wasBusy = state.busy;
     const live = new Set(sources);
-    for (const source of this.pointers.keys()) if (!live.has(source)) { this.pointers.delete(source); this.presses.delete(source); this.sticks.delete(source); }
+    for (const source of this.pointers.keys()) if (!live.has(source)) {
+      this.pointers.delete(source); this.presses.delete(source); this.sticks.delete(source); this.vSticks.delete(source);
+    }
     for (const source of sources) {
       const ray = frame.getPose(source.targetRaySpace, space);
       const grip = source.gripSpace && frame.getPose(source.gripSpace, space);
@@ -103,6 +113,12 @@ export class XRControls {
         this.sticks.set(source, next.latched);
         if (next.step) this.action(source.handedness === 'right' ? 'turn' : 'skip',
           source.handedness === 'right' ? Math.sign(next.step) * 30 : next.step);
+        const vNext = thumbstickVertical(source.gamepad.axes, this.vSticks.get(source) || false);
+        this.vSticks.set(source, vNext.latched);
+        if (vNext.step) {
+          if (source.handedness === 'left') this.action('volume', vNext.step * 0.1);
+          else if (source.handedness === 'right' && state.cinema) this.action('zoom', vNext.step * 0.15);
+        }
       }
     }
     if (this.visible) this.paint(now);
@@ -119,7 +135,8 @@ export class XRControls {
     const step = ratio => ratio == null ? null : Math.round(ratio * 384);
     const spin = state.busy ? Math.floor(now / 66) : 0;
     const signature = JSON.stringify([state.title,state.status,state.busy,state.error,state.paused,state.quality,state.requestedQuality,state.qualities,
-      state.layout,Math.floor(state.time || 0),Math.floor(state.duration || 0),this.menu,this.menuPage,hovered,pressed,step(dragRatio),step(hoverRatio),spin]);
+      state.layout,state.muted,Math.round((state.volume ?? 1)*100),state.playbackRate,state.cinema,Math.round((state.cinemaScale ?? 1)*100),
+      Math.floor(state.time || 0),Math.floor(state.duration || 0),this.menu,this.menuPage,hovered,pressed,step(dragRatio),step(hoverRatio),spin]);
     if (signature === this.signature && now - this.paintedAt < 250) return;
     this.signature = signature; this.paintedAt = now;
     this.buttons = paintPanel(this.ctx,state,{hovered,pressed,dragRatio,hoverRatio,menu:this.menu,menuPage:this.menuPage,now});
@@ -167,6 +184,6 @@ export class XRControls {
   dispose() {
     const gl = this.gl; gl.deleteBuffer(this.buffer); gl.deleteTexture(this.texture); gl.deleteProgram(this.program);
     for (const shader of this.shaders) gl.deleteShader(shader);
-    this.pointers.clear(); this.presses.clear(); this.sticks.clear();
+    this.pointers.clear(); this.presses.clear(); this.sticks.clear(); this.vSticks.clear();
   }
 }
